@@ -231,6 +231,11 @@ static ssize_t state_extended_store(struct kobject *kobj, struct kobj_attribute 
 			   const char *buf, size_t n)
 {
 	if ('1' == *buf) {
+
+		if(1 == gSleep_Mode_Suspend) {
+			return n;
+		}
+
 		gSleep_Mode_Suspend = 1;
 #ifdef CONFIG_MACH_MX6SL_NTX//[
 		if(36==gptHWCFG->m_val.bPCB || 40==gptHWCFG->m_val.bPCB || 49==gptHWCFG->m_val.bPCB || 0!=gptHWCFG->m_val.bHOME_LED_PWM || 16==gptHWCFG->m_val.bKeyPad || 18==gptHWCFG->m_val.bKeyPad)
@@ -241,6 +246,11 @@ static ssize_t state_extended_store(struct kobject *kobj, struct kobj_attribute 
 #endif //]CONFIG_MACH_MX6SL_NTX
 	}
 	else {
+
+		if(0 == gSleep_Mode_Suspend) {
+			return n;
+		}
+
 		gSleep_Mode_Suspend = 0;
 //	printk ("[%s-%d] %s() %d\n",__FILE__,__LINE__,__func__,gSleep_Mode_Suspend);
 #ifdef CONFIG_MACH_MX6SL_NTX//[

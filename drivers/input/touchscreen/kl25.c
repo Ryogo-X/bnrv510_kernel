@@ -46,6 +46,7 @@ static int current_mode_1 = ACTIVE;	// default active
 
 extern volatile NTX_HWCONFIG *gptHWCFG;
 extern int gSleep_Mode_Suspend;
+extern int gWakeUpbyKL25;
 
 struct i2c_client *g_kl25_i2c_client, *g_kl25_i2c_client_2;
 static struct delayed_work kl25_delay_work;
@@ -107,7 +108,9 @@ static void kl25_work_func(struct work_struct *work)
 	uint8_t buf_recv[5];
 	struct i2c_client *client;
 
-	if (kl25_triggered & 1)
+	msleep(30);
+
+	if (kl25_triggered & 1 || 0==gptHWCFG->m_val.bRSensor2)
 		client = g_kl25_i2c_client;
 	else
 		client = g_kl25_i2c_client_2;
@@ -117,7 +120,7 @@ static void kl25_work_func(struct work_struct *work)
 	msleep(20);
 	i2c_master_recv(client, buf_recv, 3);
 	if(buf_recv[0]==0 && buf_recv[1]==0 && buf_recv[2]==0){
-		printk("not waked up by KL25\n");
+		printk("[Warning] Invalid value by KL25\n");
 	}
 	else {
 		struct input_dev *idev = i2c_get_clientdata(client);
@@ -658,7 +661,7 @@ static __devinit int kl25_i2c_probe(struct i2c_client *client,
 		return -ENODEV;
 	}
 
-	err = request_irq(client->irq, kl25_interrupt, IRQF_TRIGGER_FALLING, KL25_NAME, client);
+	err = request_irq(client->irq, kl25_interrupt, IRQF_TRIGGER_RISING, KL25_NAME, client);
 	if (err < 0) {
 		printk(KERN_ERR "%s(%s): Can't allocate irq %d\n", __FILE__, __func__, client->irq);
 		cancel_delayed_work_sync (&kl25_delay_work);
@@ -716,11 +719,14 @@ static int kl25_resume(struct i2c_client *client)
 			kl25_ctrl(client, current_mode_1);
 	}
 	else {
-		if (KL25_1_ADDR == client->addr)
-			kl25_triggered |= 1;
-		else
-			kl25_triggered |= 2;
-		schedule_delayed_work(&kl25_delay_work, 0);
+		if(gWakeUpbyKL25) {
+			if (KL25_1_ADDR == client->addr)
+				kl25_triggered |= 1;
+			else
+				kl25_triggered |= 2;
+			schedule_delayed_work(&kl25_delay_work, 0);
+			gWakeUpbyKL25 = 0;
+		}
 //		printk("kl25_resume,disable irq wakeup source %d\n",g_kl25_i2c_client->irq);
 		disable_irq_wake(client->irq);
 	}

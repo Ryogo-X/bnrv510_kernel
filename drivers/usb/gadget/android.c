@@ -215,9 +215,7 @@ static void android_disable(struct android_dev *dev)
 		usb_ep_dequeue(cdev->gadget->ep0, cdev->req);
 	}
 	spin_unlock_irqrestore(&cdev->lock, flags);
-    if (dev->enabled)
-        usb_remove_config(cdev, &android_config_driver);
-    dev->enabled = false;
+	usb_remove_config(cdev, &android_config_driver);
 }
 /*-------------------------------------------------------------------------*/
 /* Supported functions initialization */

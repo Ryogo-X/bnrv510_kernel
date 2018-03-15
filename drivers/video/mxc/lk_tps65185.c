@@ -23,6 +23,7 @@
 #include <linux/wait.h>
 #include <linux/semaphore.h>
 
+#include <linux/input.h>
 
 #ifdef CONFIG_MACH_MX6SL_NTX//[
 	#define TPS65185_PLATFORM_MX6		1
@@ -187,6 +188,8 @@ volatile static int giIsTPS65185_gpio_inited=0;
 volatile static int giIsTPS65185_turnoff_EP3V3=0;
 volatile static unsigned long gdwSafeTick_To_TurnON_RailPower;
 volatile static unsigned long gdwSafeTick_To_TurnOFF_EP3V3;
+volatile static int giTPS65185_int_state=0;
+static TPS65185_INTEVT_CB *gpfnINTCB=0;
 
 static struct i2c_board_info gtTPS65185_BIA[TOTAL_CHIPS] = {
 	{
@@ -208,6 +211,7 @@ static TPS65185_data gtTPS65185_DataA[TOTAL_CHIPS] = {
 };
 
 
+extern void ntx_report_event(unsigned int type, unsigned int code, int value);
 
 //////////////////////////////////////////////////////////////////////////
 //
@@ -292,9 +296,11 @@ static const unsigned char gbTPS65185_REG_INT2_addr=0x08;
 
 
 
+#define TPS65185_REG_UPSEQ0_ALL			0xff
 static volatile unsigned char gbTPS65185_REG_UPSEQ0=0xe4; // .
 static const unsigned char gbTPS65185_REG_UPSEQ0_addr=0x09;
 
+#define TPS65185_REG_UPSEQ1_ALL			0xff
 static volatile unsigned char gbTPS65185_REG_UPSEQ1=0x55; // .
 static const unsigned char gbTPS65185_REG_UPSEQ1_addr=0x0a;
 
@@ -520,6 +526,10 @@ static void tps65185_int_func(struct work_struct *work)
 {
 	unsigned char bRegINT1,bRegINT2;
 	unsigned short wReg;
+	unsigned long dwTPS65185_mode;
+
+	int iForceStanbyState=0;
+	int iChk;
 
 	
 	wReg = TPS65185_REG_GET(INT1);
@@ -544,36 +554,113 @@ static void tps65185_int_func(struct work_struct *work)
 
 	if(bRegINT1&TPS65185_REG_INT1_UVLO) {
 		ERR_MSG("%s(%d):%s input voltage is below UVLO threshold !\n",__FILE__,__LINE__,__FUNCTION__);
+		giTPS65185_int_state=MSC_RAW_EPD_UNKOWN_ERROR;
+#ifdef TPS65185_VDROP_PROC_IN_KERNEL//[
+#else //][!TPS65185_VDROP_PROC_IN_KERNEL
+		ntx_report_event(EV_MSC,MSC_RAW,MSC_RAW_EPD_UNKOWN_ERROR);
+#endif //]TPS65185_VDROP_PROC_IN_KERNEL
 	}
 	if(bRegINT1&TPS65185_REG_INT1_TSD) {
 		ERR_MSG("%s(%d):%s chip is over-temperature shutdown !\n",__FILE__,__LINE__,__FUNCTION__);
+		giTPS65185_int_state=MSC_RAW_EPD_OVT_ERROR;
+#ifdef TPS65185_VDROP_PROC_IN_KERNEL//[
+#else //][!TPS65185_VDROP_PROC_IN_KERNEL
+		ntx_report_event(EV_MSC,MSC_RAW,MSC_RAW_EPD_OVT_ERROR);
+#endif //]TPS65185_VDROP_PROC_IN_KERNEL
+		iForceStanbyState = 1;
 	}
 	if(bRegINT1&TPS65185_REG_INT1_HOT) {
 		ERR_MSG("%s(%d):%s chip is approaching over-temperature shutdown !\n",__FILE__,__LINE__,__FUNCTION__);
+		giTPS65185_int_state=MSC_RAW_EPD_OVT_ERROR;
+#ifdef TPS65185_VDROP_PROC_IN_KERNEL//[
+#else //][!TPS65185_VDROP_PROC_IN_KERNEL
+		ntx_report_event(EV_MSC,MSC_RAW,MSC_RAW_EPD_OVT_ERROR);
+#endif //]TPS65185_VDROP_PROC_IN_KERNEL
 	}
 
 	if(bRegINT2&TPS65185_REG_INT2_VB_UV) {
 		ERR_MSG("%s(%d):%s under-voltage on DCDC1 detected !\n",__FILE__,__LINE__,__FUNCTION__);
+		giTPS65185_int_state=MSC_RAW_EPD_DCDC1_ERROR;
+
+#ifdef TPS65185_VDROP_PROC_IN_KERNEL//[
+#else //][!TPS65185_VDROP_PROC_IN_KERNEL
+		ntx_report_event(EV_MSC,MSC_RAW,MSC_RAW_EPD_DCDC1_ERROR);
+#endif //]TPS65185_VDROP_PROC_IN_KERNEL
+
+		iForceStanbyState = 1;
 	}
 	if(bRegINT2&TPS65185_REG_INT2_VDDH_UV) {
 		ERR_MSG("%s(%d):%s under-voltage on VDDH charge pump detected !\n",__FILE__,__LINE__,__FUNCTION__);
+		giTPS65185_int_state=MSC_RAW_EPD_VDDH_ERROR;
+#ifdef TPS65185_VDROP_PROC_IN_KERNEL//[
+#else //][!TPS65185_VDROP_PROC_IN_KERNEL
+		ntx_report_event(EV_MSC,MSC_RAW,MSC_RAW_EPD_VDDH_ERROR);
+#endif //]TPS65185_VDROP_PROC_IN_KERNEL
+		
 	}
 	if(bRegINT2&TPS65185_REG_INT2_VN_UV) {
 		ERR_MSG("%s(%d):%s under-voltage on DCDC2 detected !\n",__FILE__,__LINE__,__FUNCTION__);
+		giTPS65185_int_state=MSC_RAW_EPD_DCDC2_ERROR;
+#ifdef TPS65185_VDROP_PROC_IN_KERNEL//[
+#else //][!TPS65185_VDROP_PROC_IN_KERNEL
+		ntx_report_event(EV_MSC,MSC_RAW,MSC_RAW_EPD_DCDC2_ERROR);
+#endif //]TPS65185_VDROP_PROC_IN_KERNEL
+		iForceStanbyState = 1;
 	}
 	if(bRegINT2&TPS65185_REG_INT2_VPOS_UV) {
 		ERR_MSG("%s(%d):%s under-voltage on LDO1(VPOS) detected !\n",__FILE__,__LINE__,__FUNCTION__);
+		giTPS65185_int_state=MSC_RAW_EPD_VPOS_ERROR;
+#ifdef TPS65185_VDROP_PROC_IN_KERNEL//[
+#else //][!TPS65185_VDROP_PROC_IN_KERNEL
+		ntx_report_event(EV_MSC,MSC_RAW,MSC_RAW_EPD_VPOS_ERROR);
+#endif //]TPS65185_VDROP_PROC_IN_KERNEL
 	}
 	if(bRegINT2&TPS65185_REG_INT2_VEE_UV) {
 		ERR_MSG("%s(%d):%s under-voltage on VEE charge pump detected !\n",__FILE__,__LINE__,__FUNCTION__);
+		giTPS65185_int_state=MSC_RAW_EPD_VEE_ERROR;
+#ifdef TPS65185_VDROP_PROC_IN_KERNEL//[
+#else //][!TPS65185_VDROP_PROC_IN_KERNEL
+		ntx_report_event(EV_MSC,MSC_RAW,MSC_RAW_EPD_VEE_ERROR);
+#endif //]TPS65185_VDROP_PROC_IN_KERNEL
 	}
 	if(bRegINT2&TPS65185_REG_INT2_VCOMF) {
 		ERR_MSG("%s(%d):%s fault on VCOM detected !\n",__FILE__,__LINE__,__FUNCTION__);
+		giTPS65185_int_state=MSC_RAW_EPD_VCOM_ERROR;
+#ifdef TPS65185_VDROP_PROC_IN_KERNEL//[
+#else //][!TPS65185_VDROP_PROC_IN_KERNEL
+		ntx_report_event(EV_MSC,MSC_RAW,MSC_RAW_EPD_VCOM_ERROR);
+#endif //]TPS65185_VDROP_PROC_IN_KERNEL
 	}
 	if(bRegINT2&TPS65185_REG_INT2_VNEG_UV) {
 		ERR_MSG("%s(%d):%s under-voltage on LDO2(VNEG) detected !\n",__FILE__,__LINE__,__FUNCTION__);
+		giTPS65185_int_state=MSC_RAW_EPD_VNEG_ERROR;
+#ifdef TPS65185_VDROP_PROC_IN_KERNEL//[
+#else //][!TPS65185_VDROP_PROC_IN_KERNEL
+		ntx_report_event(EV_MSC,MSC_RAW,MSC_RAW_EPD_VNEG_ERROR);
+#endif //]TPS65185_VDROP_PROC_IN_KERNEL
+		iForceStanbyState = 1;
 	}
 
+	if(iForceStanbyState) {
+
+#if 1 //[
+		//tps65185_ONOFF(0);
+		//tps65185_ONOFF(1);
+		gpio_direction_output(GPIO_TPS65185_PWRUP, 0);
+		gtTPS65185_DataA[0].dwCurrent_mode=TPS65185_MODE_STANDBY;
+#else //][!
+		down(&gtTPS65185_DataA[0].chmod_lock);
+		gpio_direction_output(GPIO_TPS65185_PWRUP, 0);
+		gpio_direction_output(GPIO_TPS65185_WAKEUP, 0);
+		gtTPS65185_DataA[0].dwCurrent_mode=TPS65185_MODE_SLEEP;
+		up(&gtTPS65185_DataA[0].chmod_lock);
+#endif //]
+
+	}
+
+	if(	gpfnINTCB && iForceStanbyState) {
+		gpfnINTCB(giTPS65185_int_state);
+	}
 #if 0
 	if(bRegINT2&TPS65185_REG_INT2_EOC) {
 		ERR_MSG("%s(%d):%s ADC conversion is complete (temperature acquisition is complete !\n",__FILE__,__LINE__,__FUNCTION__);
@@ -696,9 +783,6 @@ static void _tps65185_pwrdwn(void)
 		{
 			// Turn off EV_3V3 ...
 			//TPS65185_REG_SET(ENABLE,V3P3_EN,0);
-#ifdef GPIO_TPS65185_EP_3V3_IN //[
-			//udelay(10);gpio_direction_output(GPIO_TPS65185_EP_3V3_IN, 0);
-#endif //]GPIO_TPS65185_EP_3V3_IN
 		}
 		gpio_direction_output(GPIO_TPS65185_WAKEUP, 0);
 	}
@@ -761,9 +845,12 @@ static int tps65185_gpio_init(void)
 
 	// outputs
 #ifdef GPIO_TPS65185_EP_3V3_IN //[
-	mxc_iomux_v3_setup_pad(GPIO_TPS65185_EP_3V3_IN_PADCFG);
-	gpio_request(GPIO_TPS65185_EP_3V3_IN, "tps65185_EP_3V3_IN");
-	gpio_direction_output(GPIO_TPS65185_EP_3V3_IN, 1);
+	if(!NTXHWCFG_TST_FLAG(gptHWCFG->m_val.bEPD_Flags,0)) {
+		// NO_VDD_CTRL ...
+		mxc_iomux_v3_setup_pad(GPIO_TPS65185_EP_3V3_IN_PADCFG);
+		gpio_request(GPIO_TPS65185_EP_3V3_IN, "tps65185_EP_3V3_IN");
+		gpio_direction_output(GPIO_TPS65185_EP_3V3_IN, 1);
+	}
 #endif //]GPIO_TPS65185_EP_3V3_IN
 	gdwSafeTick_To_TurnOFF_EP3V3 = jiffies;
 
@@ -960,6 +1047,25 @@ static int tps65185_reg_init(int I_iIsEP_3V3_ON)
 		goto error;
 	}
 
+	if(8==gptHWCFG->m_val.bDisplayResolution) {
+		// change power on seqence for EPD 1872x1404 (ED078KH1) .
+
+		bRegVal = 0xe1; // strobe seqence -20 -> -15 ....
+		iRet = TPS65185_REG_SET(UPSEQ0,ALL,bRegVal);
+		if(iRet<0) {
+			GALLEN_DBGLOCAL_RUNLOG(5);
+			goto error;
+		}
+
+		bRegVal = 0x00; // strobe delay set to 3ms .
+		iRet = TPS65185_REG_SET(UPSEQ1,ALL,bRegVal);
+		if(iRet<0) {
+			GALLEN_DBGLOCAL_RUNLOG(6);
+			goto error;
+		}
+
+	}
+
 	bRegVal = gbTPS65185_REG_DWNSEQ0_default;
 	iRet = TPS65185_REG_SET(DWNSEQ0,ALL,bRegVal);
 	if(iRet<0) {
@@ -1068,6 +1174,10 @@ int tps65185_init(int iPort,int iEPDTimingType)
 			gtTPS65185_DataA[0].dwEP3V3_Off_Ticks = 200;// times wait VEE >= -7.4V .
 #endif
 		}
+		else if(8==gptHWCFG->m_val.bDisplayResolution) {
+			// resolution is 1872x1404 ...
+			gtTPS65185_DataA[0].dwEP3V3_Off_Ticks = 900;//measured on E70Q02 .
+		}
 		else if(1==gptHWCFG->m_val.bDisplayResolution) {
 			// resolution is 1024x758 ...
 			gtTPS65185_DataA[0].dwEP3V3_Off_Ticks = 400;//measured on Q32 .
@@ -1075,6 +1185,15 @@ int tps65185_init(int iPort,int iEPDTimingType)
 		else if(0==gptHWCFG->m_val.bDisplayResolution) {
 			// resolution is 800x600 ...
 			gtTPS65185_DataA[0].dwEP3V3_Off_Ticks = 650;//measured on Q92 .
+		}
+		else if(3==gptHWCFG->m_val.bDisplayResolution) {
+			// resolution is 1440x1080 ...
+			if (42==gptHWCFG->m_val.bPCB) {
+				gtTPS65185_DataA[0].dwEP3V3_Off_Ticks = 200;//measured on E60Q62 .
+			}
+			else {
+				gtTPS65185_DataA[0].dwEP3V3_Off_Ticks = 900;//measured on E60QM2 .
+			}
 		}
 		else {
 			gtTPS65185_DataA[0].dwEP3V3_Off_Ticks = 400;
@@ -1600,9 +1719,6 @@ int tps65185_chg_mode(unsigned long *IO_pdwMode,int iIsWaitPwrOff)
 						DBG_MSG("msleep %ld ticks for resume times\n",dwTicks);
 					}
 
-#ifdef GPIO_TPS65185_EP_3V3_IN //[
-					//gpio_direction_output(GPIO_TPS65185_EP_3V3_IN, 1);udelay(30);
-#endif //]GPIO_TPS65185_EP_3V3_IN
 
 					//TPS65185_REG_SET(ENABLE,V3P3_EN,1);udelay(100);
 					gpio_direction_output(GPIO_TPS65185_PWRUP, 1);
@@ -1627,9 +1743,6 @@ int tps65185_chg_mode(unsigned long *IO_pdwMode,int iIsWaitPwrOff)
 						DBG_MSG("msleep %ld ticks for resume times\n",dwTicks);
 					}
 
-#ifdef GPIO_TPS65185_EP_3V3_IN //[
-					//gpio_direction_output(GPIO_TPS65185_EP_3V3_IN, 1);udelay(10);
-#endif //]GPIO_TPS65185_EP_3V3_IN
 
 					//TPS65185_REG_SET(ENABLE,V3P3_EN,1);udelay(100);
 				}
@@ -1730,10 +1843,6 @@ int tps65185_chg_mode(unsigned long *IO_pdwMode,int iIsWaitPwrOff)
 					gtTPS65185_DataA[0].dwCurrent_mode = dwNewMode;
 
 #ifdef TPS65185_RESUME_EP3V3_ON //[
-
-#ifdef GPIO_TPS65185_EP_3V3_IN //[
-					//gpio_direction_output(GPIO_TPS65185_EP_3V3_IN, 1);udelay(10);
-#endif //]GPIO_TPS65185_EP_3V3_IN
 
 					//TPS65185_REG_SET(ENABLE,V3P3_EN,1);udelay(100);
 #endif //]TPS65185_RESUME_EP3V3_ON
@@ -2036,8 +2145,12 @@ int tps65185_ONOFF(int iIsON)
 
 		//TPS65185_VCOM_OUT(1);
 
+		
 #ifdef GPIO_TPS65185_EP_3V3_IN //[
-		gpio_direction_output(GPIO_TPS65185_EP_3V3_IN, 1);
+		if(!NTXHWCFG_TST_FLAG(gptHWCFG->m_val.bEPD_Flags,0)) {
+			// NO_VDD_CTRL ...
+			gpio_direction_output(GPIO_TPS65185_EP_3V3_IN, 1);
+		}
 #endif //]GPIO_TPS65185_EP_3V3_IN
 
 		gpio_direction_output(GPIO_TPS65185_VIN, 1);
@@ -2087,7 +2200,10 @@ int tps65185_ONOFF(int iIsON)
 		gtTPS65185_DataA[0].dwCurrent_mode=TPS65185_MODE_SLEEP;
 		up(&gtTPS65185_DataA[0].chmod_lock);
 #ifdef GPIO_TPS65185_EP_3V3_IN //[
-		gpio_direction_output(GPIO_TPS65185_EP_3V3_IN, 0);
+		if(!NTXHWCFG_TST_FLAG(gptHWCFG->m_val.bEPD_Flags,0)) {
+			// NO_VDD_CTRL ...
+			gpio_direction_output(GPIO_TPS65185_EP_3V3_IN, 0);
+		}
 #endif //]GPIO_TPS65185_EP_3V3_IN
 	}
 
@@ -2097,7 +2213,28 @@ int tps65185_ONOFF(int iIsON)
 #endif //] TPS65185_SUSPEND
 }
 
+// get latest interrupt state of TPS65185 .
+int tps65185_int_state_get(void)
+{
+	if(giTPS65185_int_state>0) {
+		return giTPS65185_int_state;
+	}
+	return -1;
+}
 
+// clear latest interrupt state of TPS65185 .
+int tps65185_int_state_clear(void)
+{
+	giTPS65185_int_state=0;
+	return 0;
+}
+
+int tps65185_int_callback_setup(TPS65185_INTEVT_CB fnCB)
+{
+	gpfnINTCB=fnCB;
+
+	return 0;
+}
 
 void tps65185_irqs_enable(int iIsEnable)
 {

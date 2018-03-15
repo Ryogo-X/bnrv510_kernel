@@ -44,6 +44,12 @@
 #include "../../../arch/arm/mach-mx6/ntx_hwconfig.h"
 extern volatile NTX_HWCONFIG *gptHWCFG;
 
+#if 1
+#define SUSPEND_PRINT(fmt,args...)
+#else
+#define SUSPEND_PRINT(fmt,args...)		printk(fmt,##args)
+#endif
+
 #define BATTERY_ADC_UNUSED_TEMP -999
 static int gBatt_ADC_isr_temp = BATTERY_ADC_UNUSED_TEMP;
 static unsigned long gBatt_ADC_isr_tick;
@@ -321,6 +327,8 @@ static ssize_t store_fake_soc(struct device *device,
 }
 static DEVICE_ATTR(fake_soc, 0644, show_fake_soc, store_fake_soc);
 
+
+
 static int add_fake_soc_sysfs(struct device *dev) {
 	int err;
 	err = device_create_file(dev, &dev_attr_fake_soc);
@@ -332,6 +340,148 @@ static int add_fake_soc_sysfs(struct device *dev) {
 static void remove_fake_soc_sysfs(struct device *dev) {
 	device_remove_file(dev, &dev_attr_fake_soc);
 }
+
+
+extern int ricoh619_charger_detect(void);
+typedef void (*usb_insert_handler) (char inserted);
+extern usb_insert_handler mxc_misc_report_usb;
+
+static int giRICOH619_DCIN;
+static int _config_ricoh619_charger_params(struct device *bat_dev,int iChargerType)
+{
+	uint8_t val = 0, ilim_adp = 0, ilim_usb = 0, ichg = 0;
+	
+	ricoh61x_read(bat_dev->parent, CHGISET_REG, &val);
+	val &= 0xe0;
+	//if (status&0x30)
+	if(iChargerType==CDP_CHARGER||iChargerType==DCP_CHARGER)
+	{	// DCP(10) or CDP(01) .
+		printk(KERN_INFO "PMU:%s set DCP/CDP charging.\n", __func__);
+		switch (gptHWCFG->m_val.bPCB) {
+		case 49:  //E60QDX
+		case 69:  //E60QQX
+			ilim_adp = 0x09;	//1000mA
+			ilim_usb = 0x29;	//1000mA
+			ichg = 0x07; 		//800mA
+			break;
+		default:
+			ilim_adp = 0x0D;  	//1400mA
+			ilim_usb = 0x2D;  	//1400mA
+			ichg = 0x09;		//1000mA
+			break;
+		}
+		ricoh61x_write(bat_dev->parent, REGISET1_REG, ilim_adp);
+		ricoh61x_write(bat_dev->parent, REGISET2_REG, ilim_usb);
+		ricoh61x_write(bat_dev->parent, CHGISET_REG, val|ichg);
+	}
+	else if(iChargerType==SDP_ADPT_CHARGER)
+	{	// SDP Adptor charger .
+		printk(KERN_INFO "PMU:%s set SDP 800mA charging.\n", __func__);
+		ricoh61x_write(bat_dev->parent, REGISET1_REG, 0x09);
+		ricoh61x_write(bat_dev->parent, REGISET2_REG, 0x29);
+		ricoh61x_write(bat_dev->parent, CHGISET_REG, val|0x07);
+	}
+	else 
+	{	// SDP PC
+		printk(KERN_INFO "PMU:%s set SDP 500mA charging.\n", __func__);
+		ricoh61x_write(bat_dev->parent, REGISET1_REG, 0x06);
+		ricoh61x_write(bat_dev->parent, REGISET2_REG, 0xE6);
+		ricoh61x_write(bat_dev->parent, CHGISET_REG, val|0x04);
+	}
+
+	return 0;
+}
+
+
+static ssize_t charger_type_read(struct device *dev, struct device_attribute *attr,char *buf)
+{
+	switch (giRICOH619_DCIN) {
+	case CDP_CHARGER:
+		sprintf (buf,"CDP\n");
+		break;
+	case DCP_CHARGER:
+		sprintf (buf,"DCP\n");
+		break;
+	case SDP_PC_CHARGER:
+		sprintf (buf,"SDP_PC\n");
+		break;
+	case SDP_ADPT_CHARGER:
+		sprintf (buf,"SDP_ADPT\n");
+		break;
+	case NO_CHARGER_PLUGGED:
+		sprintf (buf,"NO\n");
+		break;
+	case -1:
+		sprintf (buf,"DISABLE\n");
+		break;
+	default:
+		buf[0] = '\0';
+		break;
+	}
+	return strlen(buf);
+}
+
+static ssize_t charger_type_write(struct device *dev, struct device_attribute *attr,
+		       const char *buf, size_t count)
+{
+	uint8_t val = 0, ilim_adp = 0, ilim_usb = 0, ichg = 0;
+	int iLastChargerType=giRICOH619_DCIN;
+
+	if(0==strcmp(buf,"CDP")) {
+		if(0x03==gptHWCFG->m_val.bUIConfig) {
+			giRICOH619_DCIN=CDP_CHARGER;
+		}
+	}
+	else if(0==strcmp(buf,"DCP")) {
+		if(0x03==gptHWCFG->m_val.bUIConfig) {
+			giRICOH619_DCIN=DCP_CHARGER;
+		}
+	}
+	else if(0==strcmp(buf,"SDP_PC")) {
+		giRICOH619_DCIN=SDP_PC_CHARGER;
+	}
+	else if(0==strcmp(buf,"SDP_ADPT")) {
+		giRICOH619_DCIN=SDP_ADPT_CHARGER;
+	}
+	else if(0==strcmp(buf,"NO")) {
+		giRICOH619_DCIN=NO_CHARGER_PLUGGED;
+	}
+	else {
+		printk("Wrong type ! only allow [CDP|DCP|SDP_PC|SDP_ADPT|NO|DISABLE] \n");
+	}
+
+	if(iLastChargerType!=giRICOH619_DCIN) {
+		printk("%s():report DCIN=%d\n",__FUNCTION__,giRICOH619_DCIN?1:0);
+		_config_ricoh619_charger_params(dev,giRICOH619_DCIN);
+		if(mxc_misc_report_usb) {
+			mxc_misc_report_usb(giRICOH619_DCIN?1:0);
+		}
+	}
+
+	return count;
+}
+
+
+static DEVICE_ATTR(charger_type, 0666, charger_type_read, charger_type_write);
+
+static int _create_sys_attrs(struct device *dev)
+{
+
+	int err;
+	err = device_create_file(dev,&dev_attr_charger_type);
+	if (err) {
+		pr_err("Can't create ricoh ntx attr sysfs !\n");
+		return -1;
+	}
+	return 0;
+}
+
+static void _remove_sys_attrs(struct device *dev)
+{
+	device_remove_file(dev,&dev_attr_charger_type);
+}
+
+
 
 #ifdef STANDBY_MODE_DEBUG
 int multiple_sleep_mode;
@@ -347,6 +497,25 @@ static int Battery_Type(void)
 
 static int Battery_Table(void)
 {
+	switch (gptHWCFG->m_val.bBattery) {
+	case 8:  //3000mAh
+		BatteryTableFlageDef=1;
+		break;
+	case 10: //1200mAh
+		if(NTXHWCFG_TST_FLAG(gptHWCFG->m_val.bEPD_Flags,1)) {
+			BatteryTableFlageDef=4;
+		}
+		else {
+			BatteryTableFlageDef=2;
+		}
+		break;
+	case 12: //SP284657-1000mA
+		BatteryTableFlageDef=3;
+		break;
+	default:
+		BatteryTableFlageDef=0;
+		break;
+	}
 	return BatteryTableFlageDef;
 }
 
@@ -527,7 +696,7 @@ static void set_current_time2register(struct ricoh61x_battery_info *info)
 	//
 	get_current_time(info, &seconds);
 	hour  = seconds / 3600;
-	printk(KERN_DEBUG"PMU : %s : second is %lu, hour is %lu\n",__func__, seconds, hour);
+	SUSPEND_PRINT(KERN_DEBUG"PMU : %s : second is %lu, hour is %lu\n",__func__, seconds, hour);
 
 	do{
 		val = hour & 0xff;
@@ -551,6 +720,7 @@ static void set_current_time2register(struct ricoh61x_battery_info *info)
 	return;
 }
 
+static int measure_vbatt_ADC(struct ricoh61x_battery_info *info, int *data);
 #ifdef ENABLE_FUEL_GAUGE_FUNCTION
 static int measure_vbatt_FG(struct ricoh61x_battery_info *info, int *data);
 static int measure_Ibatt_FG(struct ricoh61x_battery_info *info, int *data);
@@ -828,7 +998,7 @@ static int check_charge_status_2(struct ricoh61x_battery_info *info, int display
 			} else {
 				g_full_flag = 0;
 				info->soca->displayed_soc = displayed_soc_temp;
-				printk(KERN_INFO "PMU: %s Charge Complete but OCV is low\n", __func__);
+				SUSPEND_PRINT(KERN_INFO "PMU: %s Charge Complete but OCV is low\n", __func__);
 			}
 
 		}
@@ -846,7 +1016,7 @@ static int check_charge_status_2(struct ricoh61x_battery_info *info, int display
 				g_full_flag = 0;
 				//info->soca->displayed_soc = 100*100;
 				info->soca->displayed_soc = displayed_soc_temp;
-				printk(KERN_INFO "PMU: %s g_full_flag=1 but OCV is low\n", __func__);
+				SUSPEND_PRINT(KERN_INFO "PMU: %s g_full_flag=1 but OCV is low\n", __func__);
 			} else {
 				info->soca->displayed_soc = 100*100;
 			}
@@ -860,14 +1030,14 @@ static int check_charge_status_2(struct ricoh61x_battery_info *info, int display
 			info->soca->soc_full = info->soca->soc;
 			info->soca->displayed_soc = 100*100;
 			info->soca->full_reset_count = 0;
-			printk(KERN_INFO "PMU:%s Charge Complete in PowerOff\n", __func__);
+			SUSPEND_PRINT(KERN_INFO "PMU:%s Charge Complete in PowerOff\n", __func__);
 		} else if ((info->first_pwon == 0)
 			&& !g_fg_on_mode) {
-			printk(KERN_INFO "PMU:%s 2nd P-On init_pswr(%d), cc(%d)\n",
+			SUSPEND_PRINT(KERN_INFO "PMU:%s 2nd P-On init_pswr(%d), cc(%d)\n",
 				__func__, info->soca->init_pswr, info->soca->cc_delta);
 			if ((info->soca->init_pswr == 100)
 				&& (info->soca->cc_delta > -100)) {
-				printk(KERN_INFO "PMU:%s Set 100%%\n", __func__);
+				SUSPEND_PRINT(KERN_INFO "PMU:%s Set 100%%\n", __func__);
 				g_full_flag = 1;
 				info->soca->soc_full = info->soca->soc;
 				info->soca->displayed_soc = 100*100;
@@ -875,11 +1045,11 @@ static int check_charge_status_2(struct ricoh61x_battery_info *info, int display
 			}
 		}
 	} else {
-		printk(KERN_INFO "PMU:%s Resume Sus_soc(%d), cc(%d)\n",
+		SUSPEND_PRINT(KERN_DEBUG "PMU:%s Resume Sus_soc(%d), cc(%d)\n",
 			__func__, info->soca->suspend_soc, info->soca->cc_delta);
 		if ((info->soca->suspend_soc == 10000)
 			&& (info->soca->cc_delta > -100)) {
-			printk(KERN_INFO "PMU:%s Set 100%%\n", __func__);
+			SUSPEND_PRINT(KERN_INFO "PMU:%s Set 100%%\n", __func__);
 			info->soca->displayed_soc = 100*100;
 		}
 	}
@@ -1005,7 +1175,7 @@ static int calc_capacity_in_period(struct ricoh61x_battery_info *info,
 		if (*is_charging == false) {
 			cc_sum_dec = (cc_sum_dec^0xffffffff) + 1;
 		}
-		printk(KERN_INFO "PMU %s 1%%FACAP(%d)[mAs], cc_sum(%d)[mAs], cc_sum_dec(%d)\n",
+		SUSPEND_PRINT(KERN_DEBUG "PMU %s 1%%FACAP(%d)[mAs], cc_sum(%d)[mAs], cc_sum_dec(%d)\n",
 			 __func__, fa_cap_int, cc_sum, cc_sum_dec);
 
 		if (cc_sum_int != 0) {
@@ -1024,7 +1194,7 @@ static int calc_capacity_in_period(struct ricoh61x_battery_info *info,
 							CC_SUMREG3_REG, 4, cc_clr);
 			if (err < 0)
 				goto out;
-			printk(KERN_INFO "PMU %s Half-Clear CC, cc_sum is over 1%%\n",
+			SUSPEND_PRINT(KERN_INFO "PMU %s Half-Clear CC, cc_sum is over 1%%\n",
 				 __func__);
 		}
 	}
@@ -1050,7 +1220,7 @@ static int calc_capacity_in_period(struct ricoh61x_battery_info *info,
 			goto out;
 
 		/* ricoh61x_read(info->dev->parent, RICOH61x_INT_IR_CHGSTS1, &val);
-//		printk("INT_IR_CHGSTS1 = 0x%x\n",val); */
+//		SUSPEND_PRINT("INT_IR_CHGSTS1 = 0x%x\n",val); */
 
 		/* Enable Charging Interrupt */
 		err = ricoh61x_clr_bits(info->dev->parent,
@@ -1068,7 +1238,7 @@ static int calc_capacity_in_period(struct ricoh61x_battery_info *info,
 
 	*cc_cap_mas = cc_sum;
 
-	//printk("PMU: cc_sum = %d: cc_cap= %d: cc_cap_mas = %d\n", cc_sum, *cc_cap, *cc_cap_mas);
+	//SUSPEND_PRINT("PMU: cc_sum = %d: cc_cap= %d: cc_cap_mas = %d\n", cc_sum, *cc_cap, *cc_cap_mas);
 	
 	if (cc_rst == 1) {
 		cc_cap_min = fa_cap*3600/100/100/100;	/* Unit is 0.0001% */
@@ -1081,7 +1251,7 @@ static int calc_capacity_in_period(struct ricoh61x_battery_info *info,
 		cc_cap_res = cc_cap_temp % 100;
 
 #ifdef	_RICOH619_DEBUG_
-		printk(KERN_DEBUG"PMU: cc_sum = %d: cc_cap_res= %d: cc_cap_mas = %d\n", cc_sum, cc_cap_res, cc_cap_mas);
+		SUSPEND_PRINT(KERN_DEBUG"PMU: cc_sum = %d: cc_cap_res= %d: cc_cap_mas = %d\n", cc_sum, cc_cap_res, cc_cap_mas);
 #endif
 
 		if(*is_charging) {
@@ -1098,7 +1268,7 @@ static int calc_capacity_in_period(struct ricoh61x_battery_info *info,
 			}
 		}
 #ifdef	_RICOH619_DEBUG_
-		printk(KERN_DEBUG"PMU: cc_cap_offset= %d: \n", info->soca->cc_cap_offset);
+		SUSPEND_PRINT(KERN_DEBUG"PMU: cc_cap_offset= %d: \n", info->soca->cc_cap_offset);
 #endif
 	} else {
 		info->soca->cc_cap_offset = 0;
@@ -1363,17 +1533,55 @@ static int getCapFromOriTable_U10per(struct ricoh61x_battery_info *info, int vol
 	int i =0;
 	int capacity=0;
 
-	int ocv_table[11] = {	3468207,
-							3554926,
-							3605932,
-							3627745,
-							3639093,
-							3646930,
-							3655757,
-							3665738,
-							3672731,
-							3680469,
-							3687400};
+	int ocv_table_for_1200mAh[11] = {	3760971,
+							3762013,
+							3763979,
+							3765679,
+							3767413,
+							3770971,
+							3773546,
+							3775474,
+							3777529,
+							3778813,
+							3779815};
+	int ocv_table_regular[11] = {   3750000,
+							3755000,
+							3760819,
+							3763569,
+							3768169,
+							3768769,
+							3771207,
+							3774119,
+							3776061,
+							3778194,
+							3780219};
+	int ocv_table_for_1200mAh_coff36[11] = {	3602154,
+ 							3640621,
+ 							3670068,
+ 							3680034,
+ 							3683734,
+ 							3685768,
+ 							3689288,
+ 							3692088,
+ 							3695388,
+ 							3698221,
+ 							3701000};
+
+
+	int *ocv_table;
+
+	if(10 == gptHWCFG->m_val.bBattery) {// 1200mAh battery
+		if(NTXHWCFG_TST_FLAG(gptHWCFG->m_val.bEPD_Flags,1)) {
+			// cut off @ 3.6V for LPTFT .
+			ocv_table = ocv_table_for_1200mAh_coff36;
+		}
+		else {
+			ocv_table = ocv_table_for_1200mAh;
+		}
+	}
+	else {
+		ocv_table = ocv_table_regular;
+	}
 
 	ocv = voltage - (currentvalue * resvalue);
 
@@ -1559,15 +1767,32 @@ static int calc_soc_by_voltageMethod(struct ricoh61x_battery_info *info)
 {
 	int soc;
 	int ret;
+	if (info->soca->ready_fg) {
+		ret = measure_vbatt_FG(info, &info->soca->Vbat_ave);
+	}
+	else {
+		printk("%s(): FG not ready , getting vbatt from ADC .\n",__FUNCTION__);
+		ret = measure_vbatt_ADC(info, &info->soca->Vbat_ave);
+	}
 
-	ret = measure_vbatt_FG(info, &info->soca->Vbat_ave);
 
-	if(info->soca->Vbat_ave > 4100000) {
-		soc = 10000;
-	} else if(info->soca->Vbat_ave < 3500000) {
-		soc = 0;
-	} else {
-		soc = 10000 - ((4100000 - info->soca->Vbat_ave) / 60);
+	if(10 == gptHWCFG->m_val.bBattery) {// 1200mAh battery
+		if(info->soca->Vbat_ave > 4100000) {
+			soc = 10000;
+		} else if(info->soca->Vbat_ave < 3750000) {
+			soc = 0;
+		} else {
+			soc = 10000 - ((4100000 - info->soca->Vbat_ave) / 35);
+		}
+	}
+	else {
+		if(info->soca->Vbat_ave > 4100000) {
+			soc = 10000;
+		} else if(info->soca->Vbat_ave < 3500000) {
+			soc = 0;
+		} else {
+			soc = 10000 - ((4100000 - info->soca->Vbat_ave) / 60);
+		}
 	}
 
 	get_power_supply_status(info);
@@ -1580,7 +1805,7 @@ static int calc_soc_by_voltageMethod(struct ricoh61x_battery_info *info)
 	// Cutoff under 1% on Voltage Method
 	soc = (soc / 100) * 100;
 
-	printk("PMU : %s : VBAT is %d [uV], soc is %d [0.01%%] ----------\n"
+	SUSPEND_PRINT(KERN_DEBUG"PMU : %s : VBAT is %d [uV], soc is %d [0.01%%] ----------\n"
 		,__func__, info->soca->Vbat_ave, soc);
 
 	// soc range is 0~10000
@@ -1602,7 +1827,7 @@ static void update_rsoc_on_voltageMethod(struct ricoh61x_battery_info *info, int
 	info->soca->last_soc = soc_voltage;
 	info->soca->rsoc_ready_flag = 0;
 
-	printk(KERN_INFO "PMU: %s : Voltage Method. state(%d), dsoc(%d), rsoc(%d), init_pswr(%d), cc_delta(%d) ----------\n",
+	SUSPEND_PRINT(KERN_INFO "PMU: %s : Voltage Method. state(%d), dsoc(%d), rsoc(%d), init_pswr(%d), cc_delta(%d) ----------\n",
 		 __func__, info->soca->status, soc_voltage, soc_voltage, info->soca->init_pswr, soc_voltage%100);
 
 	return;
@@ -1631,7 +1856,7 @@ static void update_rsoc_on_currentMethod(struct ricoh61x_battery_info *info, int
 	info->soca->init_pswr = resume_rsoc / 100;
 	write_extra_value_to_ccsum(info, (resume_rsoc % 100));
 	info->soca->rsoc_ready_flag = 0;
-	printk(KERN_INFO "PMU: %s : Current Method. state(%d), dsoc(%d), rsoc(%d), init_pswr(%d), cc_delta(%d) ----------\n",
+	SUSPEND_PRINT(KERN_DEBUG "PMU: %s : Current Method. state(%d), dsoc(%d), rsoc(%d), init_pswr(%d), cc_delta(%d) ----------\n",
 		 __func__, info->soca->status, soc_current, resume_rsoc, info->soca->init_pswr, resume_rsoc%100);
 
 	return;
@@ -1732,7 +1957,9 @@ static void ricoh61x_displayed_work(struct work_struct *work)
 			info->soca->status = RICOH61x_SOCA_FULL;
 			g_full_flag = 0;
 			info->soca->last_soc_full = 0;
-		} else if (info->soca->Ibat_ave >= -12) {
+		} else if ( ((10 == gptHWCFG->m_val.bBattery)&&info->soca->Ibat_ave >= -6) ||
+			((10 != gptHWCFG->m_val.bBattery)&&info->soca->Ibat_ave >= -12) ) 
+		{
 			/* for issue1 solution end */
 			/* check Full state or not*/
 			if ((calculated_ocv > get_OCV_voltage(info, RICOH61x_ENTER_FULL_STATE_OCV, USING))
@@ -1776,7 +2003,9 @@ static void ricoh61x_displayed_work(struct work_struct *work)
 		info->soca->last_soc = calc_capacity_2(info);	/* for DISP */
 		last_dsoc = info->soca->displayed_soc;
 		
-		if (info->soca->Ibat_ave >= -12) { /* charging */
+		if ( ((10 == gptHWCFG->m_val.bBattery)&&info->soca->Ibat_ave >= -6) ||
+			((10 != gptHWCFG->m_val.bBattery)&&info->soca->Ibat_ave >= -12) ) 
+		{ /* charging */
 			if (0 == info->soca->jt_limit) {
 				if (g_full_flag == 1) {
 					
@@ -1937,11 +2166,22 @@ static void ricoh61x_displayed_work(struct work_struct *work)
 
 							/* Adjust parameters */
 							full_rate_org = full_rate;
-							full_rate_max = 140;
-							full_rate_min = 30;
+							
+							if(10 == gptHWCFG->m_val.bBattery) {// 1200mAh battery
+								full_rate_max = 180;
+								full_rate_min = 30;
 
-							if (ibat_soc >= 9450) {
-								full_rate_max = 140 + (ibat_soc - 9450) / 2;
+								if (ibat_soc >= 8950) {
+									full_rate_max = 180 + (ibat_soc - 8950) / 3;
+								}
+							}
+							else {
+								full_rate_max = 140;
+								full_rate_min = 30;
+
+								if (ibat_soc >= 9450) {
+									full_rate_max = 140 + (ibat_soc - 9450) / 3;
+								}
 							}
 
 							full_rate = min(full_rate_max, max(full_rate_min, full_rate));
@@ -2143,7 +2383,9 @@ static void ricoh61x_displayed_work(struct work_struct *work)
 			if (err < 0)
 				dev_err(info->dev, "Error in writing the control register\n");
 			goto end_flow;
-		} else if (info->soca->Ibat_ave >= -12) {
+		} else if ( ((10 == gptHWCFG->m_val.bBattery)&&info->soca->Ibat_ave >= -6) ||
+			((10 != gptHWCFG->m_val.bBattery)&&info->soca->Ibat_ave >= -12) ) 
+		{
 			/* for issue1 solution end */
 			/* check Full state or not*/
 			if ((calculated_ocv > (get_OCV_voltage(info, 9, USING) + (get_OCV_voltage(info, 10, USING) - get_OCV_voltage(info, 9, USING))*7/10))
@@ -2800,8 +3042,10 @@ static int ricoh61x_init_fgsoca(struct ricoh61x_battery_info *info)
 	info->soca->n_cap = get_OCV_init_Data(info, 11, USING);
 
 
-	info->soca->displayed_soc = 0;
-	info->soca->last_displayed_soc = 0;
+	//info->soca->displayed_soc = 0;
+	//info->soca->last_displayed_soc = 0;
+	info->soca->displayed_soc = calc_soc_by_voltageMethod(info);
+	info->soca->last_displayed_soc = info->soca->displayed_soc;
 	info->soca->suspend_soc = 0;
 	info->soca->suspend_full_flg = false;
 	info->soca->ready_fg = 0;
@@ -3262,6 +3506,7 @@ static void ricoh61x_scaling_OCV_table(struct ricoh61x_battery_info *info, int c
 	int		temp;
 	int		percent_step;
 	int		OCV_percent_new[11];
+
 	/* get ocv table. this table is calculated by Apprication */
 	//printk("PMU : %s : original table\n",__func__);
 	//for (i = 0; i <= 10; i = i+1) {
@@ -3530,7 +3775,7 @@ static int ricoh61x_init_battery(struct ricoh61x_battery_info *info)
 	int cc_cap = 0;
 	long cc_cap_mas = 0;
 	bool is_charging = true;
-
+	
 	/* Need to implement initial setting of batery and error */
 	/* -------------------------- */
 #ifdef ENABLE_FUEL_GAUGE_FUNCTION
@@ -3818,12 +4063,19 @@ static int ricoh61x_init_charger(struct ricoh61x_battery_info *info)
 
 	val |= 0x08;	// set vweak to 3.3
 
+	if (49==gptHWCFG->m_val.bPCB || 69==gptHWCFG->m_val.bPCB)   //E60QDX, E60QQX
+		val |= 0x80;	// set CHGPON to 3.3V
+
 	err = ricoh61x_write(info->dev->parent, BATSET1_REG, val);
 	if (err < 0) {
 		dev_err(info->dev, "Error in writing BAT1_REG %d\n",
 									 err);
 		goto free_device;
 	}
+
+	if (49==gptHWCFG->m_val.bPCB || 69==gptHWCFG->m_val.bPCB)   //E60QDX, E60QQX
+		err = ricoh61x_write(info->dev->parent, 0xB4, 0x20);	// set USB_VCONTMASK to enable CHGPON
+
 		//debug messeage
 	err = ricoh61x_read(info->dev->parent, BATSET1_REG,&val);
 	printk("PMU : %s : after BATSET1_REG (0x%x) is 0x%x info->ch_vbatovset is 0x%x\n",__func__,BATSET1_REG,val,info->ch_vbatovset);
@@ -3983,7 +4235,7 @@ static int ricoh61x_init_charger(struct ricoh61x_battery_info *info)
 	/* Enable VBAT pin conversion in auto-ADC */
 	ricoh61x_write(info->dev->parent, RICOH61x_ADC_CNT1, 0x12);
 	/* Set VBAT threshold low voltage value = (voltage(V)*255)/(2*2.5) */
-	val = (info->alarm_vol_mv - 20) * 255 / 5000;
+	val = (info->alarm_vol_mv) * 255 / 5000;
 	ricoh61x_write(info->dev->parent, RICOH61x_ADC_VBAT_THL, val);
 #endif
 #ifdef ENABLE_BATTERY_TEMP_DETECTION
@@ -4003,7 +4255,7 @@ static int ricoh61x_init_charger(struct ricoh61x_battery_info *info)
 
 	/* Start auto-mode & average 4-time conversion mode for ADC */
 	ricoh61x_write(info->dev->parent, RICOH61x_ADC_CNT3, 0x28);
-
+	//ricoh61x_write(info->dev->parent, 0xb1, 0x4); // BATDET set to 3.1V .
 #endif
 
 free_device:
@@ -4146,11 +4398,6 @@ static int get_power_supply_Android_status(struct ricoh61x_battery_info *info)
 	return POWER_SUPPLY_STATUS_UNKNOWN;
 }
 
-extern int ricoh619_charger_detect(void);
-typedef void (*usb_insert_handler) (char inserted);
-extern usb_insert_handler mxc_misc_report_usb;
-
-static int giRICOH619_DCIN;
 int ricoh619_dcin_status(void)
 {
 	return giRICOH619_DCIN;
@@ -4162,12 +4409,13 @@ static void charger_irq_work(struct work_struct *work)
 		 = container_of(work, struct ricoh61x_battery_info, irq_work);
 	//uint8_t status;
 	int ret = 0;
-	uint8_t val = 0, ilim_adp = 0, ilim_usb = 0, ichg = 0;
+	uint8_t val = 0 ;
 	//uint8_t adp_current_val = 0x0E;
 	//uint8_t usb_current_val = 0x04;
 	extern void led_red(int isOn);
 	
 	printk(KERN_INFO "PMU:%s In\n", __func__);
+
 
 	power_supply_changed(&info->battery);
 
@@ -4264,45 +4512,20 @@ static void charger_irq_work(struct work_struct *work)
 			break;
 	}
 #endif
-	
+
+
 	giRICOH619_DCIN = ricoh619_charger_detect();
-	if(giRICOH619_DCIN) {
-		led_red(1);
-	}
-	else {
-		led_red(0);
+	if(9!=gptHWCFG->m_val.bCustomer) {
+		if(giRICOH619_DCIN) {
+			led_red(1);
+		}
+		else {
+			led_red(0);
+		}
 	}
 
-	//ricoh61x_read(info->dev->parent, 0xDA, &status);
-	ricoh61x_read(info->dev->parent, CHGISET_REG, &val);
-	val &= 0xe0;
-	//if (status&0x30)
-	if(giRICOH619_DCIN==CDP_CHARGER||giRICOH619_DCIN==DCP_CHARGER)
-	{	// DCP(10) or CDP(01) .
-		printk(KERN_INFO "PMU:%s set DCP/CDP charging.\n", __func__);
-		switch (gptHWCFG->m_val.bPCB) {
-		case 49:  //E60QDX
-			ilim_adp = 0x09;	//1000mA
-			ilim_usb = 0x29;	//1000mA
-			ichg = 0x07; 		//800mA
-			break;
-		default:
-			ilim_adp = 0x0D;  	//1400mA
-			ilim_usb = 0x2D;  	//1400mA
-			ichg = 0x09;		//1000mA
-			break;
-		}
-		ricoh61x_write(info->dev->parent, REGISET1_REG, ilim_adp);
-		ricoh61x_write(info->dev->parent, REGISET2_REG, ilim_usb);
-		ricoh61x_write(info->dev->parent, CHGISET_REG, val|ichg);
-	}
-	else 
-	{	// SDP
-		printk(KERN_INFO "PMU:%s set SDP charging.\n", __func__);
-		ricoh61x_write(info->dev->parent, REGISET1_REG, 0x05);
-		ricoh61x_write(info->dev->parent, REGISET2_REG, 0xE5);
-		ricoh61x_write(info->dev->parent, CHGISET_REG, val|0x04);
-	}
+	_config_ricoh619_charger_params(info->dev,giRICOH619_DCIN);
+
 	if(mxc_misc_report_usb) {
 		mxc_misc_report_usb(giRICOH619_DCIN?1:0);
 	}
@@ -4654,7 +4877,7 @@ static int calc_capacity(struct ricoh61x_battery_info *info)
 		cc_delta = (is_charging == true) ? cc_cap : -cc_cap;
 		capacity_l = (info->soca->init_pswr * 100 + cc_delta) / 100;
 #ifdef	_RICOH619_DEBUG_
-		printk(KERN_DEBUG"PMU FG_RESET : %s : capacity %d init_pswr %d cc_delta %d\n",__func__,	capacity_l, info->soca->init_pswr, cc_delta);
+		SUSPEND_PRINT(KERN_DEBUG"PMU FG_RESET : %s : capacity %d init_pswr %d cc_delta %d\n",__func__,	capacity_l, info->soca->init_pswr, cc_delta);
 #endif
 	}
 
@@ -4714,7 +4937,7 @@ static int calc_capacity_2(struct ricoh61x_battery_info *info)
 		cc_delta = (is_charging == true) ? cc_cap : -cc_cap;
 		capacity = info->soca->init_pswr * 100 + cc_delta;
 #ifdef	_RICOH619_DEBUG_
-		printk(KERN_DEBUG"PMU FG_RESET : %s : capacity %d init_pswr %d cc_delta %d\n",__func__,	(int)capacity, info->soca->init_pswr, cc_delta);
+		SUSPEND_PRINT(KERN_DEBUG"PMU FG_RESET : %s : capacity %d init_pswr %d cc_delta %d\n",__func__,	(int)capacity, info->soca->init_pswr, cc_delta);
 #endif
 	}
 
@@ -5023,7 +5246,38 @@ static int get_OCV_voltage(struct ricoh61x_battery_info *info, int index, int ta
 	return ret;
 }
 
-#else
+static int measure_vbatt_ADC(struct ricoh61x_battery_info *info, int *data)
+{
+	uint8_t data_l = 0, data_h = 0;
+	int ret;
+
+	ret = ricoh61x_read(info->dev->parent, VBATDATAH_REG, &data_h);
+	if (ret < 0) {
+		dev_err(info->dev, "Error in reading the control register\n");
+		goto err;
+	}
+
+	ret = ricoh61x_read(info->dev->parent, VBATDATAL_REG, &data_l);
+	if (ret < 0) {
+		dev_err(info->dev, "Error in reading the control register\n");
+		goto err;
+	}
+
+	*data = ((data_h & 0xff) << 4) | (data_l & 0x0f);
+	/* conversion unit 1 Unit is 1.22mv (5000/4095 mv) */
+	*data = *data * 5000 / 4095;
+	/* return unit should be 1uV */
+	*data = *data * 1000;
+
+	printk("%s():%d uV\n",__FUNCTION__,*data);
+
+	return 0;
+
+err:
+	return -1;
+}
+#else //][!ENABLE_FUEL_GAUGE_FUNCTION
+
 /* battery voltage is get from ADC */
 static int measure_vbatt_ADC(struct ricoh61x_battery_info *info, int *data)
 {
@@ -5093,7 +5347,7 @@ done:
 err:
 	return -1;
 }
-#endif
+#endif //]ENABLE_FUEL_GAUGE_FUNCTION
 
 static int measure_vsys_ADC(struct ricoh61x_battery_info *info, int *data)
 {
@@ -5129,16 +5383,19 @@ static void ricoh61x_external_power_changed(struct power_supply *psy)
 }
 
 static int gRicoh619_cur_voltage;
-
+static struct platform_device *gBattery_dev;
 int ricoh619_battery_2_msp430_adc(void)
 {
-	int i, battValue, result;
+	int result;
+#if 0
+	// report battery status by voltage
+	int i, battValue;
 	const unsigned short battGasgauge[] = {
 	//	3.0V, 3.1V, 3.2V, 3.3V, 3.4V, 3.5V, 3.6V, 3.7V, 3.8V, 3.9V, 4.0V, 4.1V, 4.2V,
 		 767,  791,  812,  833,  852,  877,  903,  928,  950,  979,  993, 1019, 1023,
 	};
-	if (critical_low_flag) return 0;
 
+	if (critical_low_flag) return 0x8000;
 	if ((!gRicoh619_cur_voltage) || (3000 > gRicoh619_cur_voltage) || (4200 < gRicoh619_cur_voltage))
 		return 1023;
 		
@@ -5149,8 +5406,68 @@ int ricoh619_battery_2_msp430_adc(void)
 	}
 	else
 		result = battGasgauge[i];
+#else
+	// report battery status by percentage
+	struct ricoh61x_battery_info *info = platform_get_drvdata(gBattery_dev);
+	int percentage = (info->soca->displayed_soc+50)/100;
+	if (0 >= percentage)
+		return 0x8000;
+	result = 885 + (1023-885)*percentage/100;
+#endif
 	return result;
 }
+
+static ssize_t show_power_on_reason(struct device *dev,
+			struct device_attribute *attr, char *buf)
+{
+	struct ricoh61x_battery_info *info = platform_get_drvdata(gBattery_dev);
+	uint8_t val;
+	ricoh61x_read(info->dev->parent, 0x09, &val);	// read power on history register.
+	switch (val) {
+	case 1:
+		return sprintf(buf, "POWER KEY");
+	case 2:
+		return sprintf(buf, "REBOOT");
+	case 4:
+		return sprintf(buf, "USB");
+	case 8:
+		return sprintf(buf, "EXTIN");
+	case 0x10:
+		return sprintf(buf, "RTC");
+	default:
+		return sprintf(buf, "UNDEFINED %X",val);
+	}
+}
+
+static DEVICE_ATTR(power_on_reason, 0644, show_power_on_reason, NULL);
+static int add_power_on_reason_sysfs(struct device *dev) {
+	int err;
+	err = device_create_file(dev, &dev_attr_power_on_reason);
+	if (err< 0)
+		printk("**FAILED adding power_on_reason sysfs\r\n");
+	return err;
+}
+
+
+extern void ricoh_suspend_state_sync(void);
+static ssize_t show_eval_curr_vals(struct device *dev,
+			struct device_attribute *attr, char *buf)
+{
+	ricoh_suspend_state_sync();
+	return sprintf(buf,"fl_current=%d\nsus_current=%d\nhiber_current=%d\n",
+			fl_current,sus_current,hiber_current);
+}
+static DEVICE_ATTR(eval_curr_vals, 0644, show_eval_curr_vals, NULL);
+static int add_eval_curr_vals_sysfs(struct device *dev) {
+	int err;
+	err = device_create_file(dev, &dev_attr_eval_curr_vals);
+	if (err< 0)
+		printk("**FAILED adding eval_curr_vals sysfs\r\n");
+	return err;
+}
+
+
+extern int ntx_is_bat_critical (void);
 
 static int ricoh61x_batt_get_prop(struct power_supply *psy,
 				enum power_supply_property psp,
@@ -5175,6 +5492,20 @@ static int ricoh61x_batt_get_prop(struct power_supply *psy,
 			val->intval = 0;
 			break;
 		}
+#if 1
+		if(CDP_CHARGER==giRICOH619_DCIN) {
+			val->intval = 4;
+		}
+		else if(DCP_CHARGER==giRICOH619_DCIN) {
+			val->intval = 3;
+		}
+		else if(SDP_PC_CHARGER==giRICOH619_DCIN) {
+			val->intval = 2;
+		}
+		else {
+			val->intval = 1;
+		}
+#else
 		val->intval = (0x04 == (status & 0x1F))?1:3;
 
 		ret = ricoh61x_read(info->dev->parent, 0xDA, &status);
@@ -5182,12 +5513,13 @@ static int ricoh61x_batt_get_prop(struct power_supply *psy,
 		if (((psy->type == POWER_SUPPLY_TYPE_MAINS) && (0x20 != (status & 0x30))) ||
 			((psy->type == POWER_SUPPLY_TYPE_USB) && (0x0 != (status & 0x30))))
 			val->intval = 0;
+#endif
 		break;
 	/* this setting is same as battery driver of 584 */
 	case POWER_SUPPLY_PROP_STATUS:
 		ret = get_power_supply_Android_status(info);
 		if (POWER_SUPPLY_STATUS_FULL == ret)
-			if (49 == gptHWCFG->m_val.bPCB)  //E60QDX
+			if (49 == gptHWCFG->m_val.bPCB || gptHWCFG->m_val.bPCB>=68)  //E60QDX/models newer than E60QPX .
 				val->intval = POWER_SUPPLY_STATUS_FULL;
 			else
 				val->intval = POWER_SUPPLY_STATUS_NOT_CHARGING;
@@ -5211,7 +5543,7 @@ static int ricoh61x_batt_get_prop(struct power_supply *psy,
 			ret = measure_vbatt_FG(info, &data);
 		else {
 			//val->intval = -EINVAL;
-			data = info->cur_voltage * 1000;
+			ret = measure_vbatt_ADC(info, &data);
 		}
 #else
 		ret = measure_vbatt_ADC(info, &data);
@@ -5243,7 +5575,10 @@ static int ricoh61x_batt_get_prop(struct power_supply *psy,
 				val->intval = g_fake_soc;
 		}
 
-		if (critical_low_flag) {
+		//printk("%s():critical_low_flag=%d,soca->displayed_soc=%d,%d%%\n",
+		//	__FUNCTION__,critical_low_flag,info->soca->displayed_soc,info->capacity);
+
+		if (critical_low_flag || ntx_is_bat_critical()) {
 			uint8_t chg_sts = 0;
 			ret = ricoh61x_read(info->dev->parent, CHGSTATE_REG, &chg_sts);
 			if (ret < 0) {
@@ -5253,6 +5588,11 @@ static int ricoh61x_batt_get_prop(struct power_supply *psy,
 			if (chg_sts & 0xC0) {
 				critical_low_flag = 0;
 			} else {
+				if (10 < info->capacity) {
+					critical_low_flag = 0;	// clear battery critical flag.
+					printk ("Battery criticl with high battery capcaty.\n");
+					break;
+				}
 				val->intval = 0;
 				info->capacity = 0;
 			}
@@ -5274,34 +5614,36 @@ static int ricoh61x_batt_get_prop(struct power_supply *psy,
 			break;
 		}
 		if (info->soca->ready_fg) {
-#if 1
-			int bat_temp_val;
-			int bat_temp_vol;
-			unsigned char adc_val;
-			ricoh61x_read(info->dev->parent, RICOH61x_ADC_VTHMDATAH, &adc_val);
-			bat_temp_val = adc_val << 4;
-			ricoh61x_read(info->dev->parent, RICOH61x_ADC_VTHMDATAL, &adc_val);
-			bat_temp_val |= (adc_val & 0x0F);
+			if(49==gptHWCFG->m_val.bPCB || 69==gptHWCFG->m_val.bPCB) {
+				// E60QDx, E60QQX
+				int bat_temp_val;
+				int bat_temp_vol;
+				unsigned char adc_val;
+				ricoh61x_read(info->dev->parent, RICOH61x_ADC_VTHMDATAH, &adc_val);
+				bat_temp_val = adc_val << 4;
+				ricoh61x_read(info->dev->parent, RICOH61x_ADC_VTHMDATAL, &adc_val);
+				bat_temp_val |= (adc_val & 0x0F);
 
-			bat_temp_vol = bat_temp_val*2500/4095;
-//			printk(KERN_INFO "PMU:%s Battery temperature %dmV (VTHMDATA 0x%02X)**********\n", __func__, bat_temp_vol);
-			if (BATTERY_TEMP_0_VOL < bat_temp_vol)
-				val->intval = -10;
-			else if ((BATTERY_TEMP_5_VOL < bat_temp_vol))
-				val->intval = 50-50*(bat_temp_vol-BATTERY_TEMP_5_VOL)/(BATTERY_TEMP_0_VOL-BATTERY_TEMP_5_VOL);
-			else if ((BATTERY_TEMP_8_VOL < bat_temp_vol))
-				val->intval = 80-30*(bat_temp_vol-BATTERY_TEMP_8_VOL)/(BATTERY_TEMP_5_VOL-BATTERY_TEMP_8_VOL);
-			else if ((BATTERY_TEMP_40_VOL < bat_temp_vol))
-				val->intval = 400-320*(bat_temp_vol-BATTERY_TEMP_40_VOL)/(BATTERY_TEMP_8_VOL-BATTERY_TEMP_40_VOL);
-			else if ((BATTERY_TEMP_48_VOL < bat_temp_vol))
-				val->intval = 480-80*(bat_temp_vol-BATTERY_TEMP_48_VOL)/(BATTERY_TEMP_40_VOL-BATTERY_TEMP_48_VOL);
-			else if ((BATTERY_TEMP_50_VOL < bat_temp_vol))
-				val->intval = 500-20*(bat_temp_vol-BATTERY_TEMP_50_VOL)/(BATTERY_TEMP_48_VOL-BATTERY_TEMP_50_VOL);
+				bat_temp_vol = bat_temp_val*2500/4095;
+	//			printk(KERN_INFO "PMU:%s Battery temperature %dmV (VTHMDATA 0x%02X)**********\n", __func__, bat_temp_vol);
+				if (BATTERY_TEMP_0_VOL < bat_temp_vol)
+					val->intval = -10;
+				else if ((BATTERY_TEMP_5_VOL < bat_temp_vol))
+					val->intval = 50-50*(bat_temp_vol-BATTERY_TEMP_5_VOL)/(BATTERY_TEMP_0_VOL-BATTERY_TEMP_5_VOL);
+				else if ((BATTERY_TEMP_8_VOL < bat_temp_vol))
+					val->intval = 80-30*(bat_temp_vol-BATTERY_TEMP_8_VOL)/(BATTERY_TEMP_5_VOL-BATTERY_TEMP_8_VOL);
+				else if ((BATTERY_TEMP_40_VOL < bat_temp_vol))
+					val->intval = 400-320*(bat_temp_vol-BATTERY_TEMP_40_VOL)/(BATTERY_TEMP_8_VOL-BATTERY_TEMP_40_VOL);
+				else if ((BATTERY_TEMP_48_VOL < bat_temp_vol))
+					val->intval = 480-80*(bat_temp_vol-BATTERY_TEMP_48_VOL)/(BATTERY_TEMP_40_VOL-BATTERY_TEMP_48_VOL);
+				else if ((BATTERY_TEMP_50_VOL < bat_temp_vol))
+					val->intval = 500-20*(bat_temp_vol-BATTERY_TEMP_50_VOL)/(BATTERY_TEMP_48_VOL-BATTERY_TEMP_50_VOL);
+				else
+					val->intval = 510;
+			}
 			else
-				val->intval = 510;
-#else
-			val->intval = get_battery_temp_2(info);
-#endif
+				val->intval = get_battery_temp_2(info);
+
 			info->battery_temp = val->intval/10;
 #ifdef	_RICOH619_DEBUG_
 			dev_dbg(info->dev,
@@ -5355,14 +5697,8 @@ static int ricoh61x_batt_get_prop(struct power_supply *psy,
 		}
 		break;
 #endif
-
-     case POWER_SUPPLY_PROP_CURRENT_NOW:
-        ret = measure_Ibatt_FG(info, &val->intval);
-        val->intval *= 1000;
-        break;
-
 	 case POWER_SUPPLY_PROP_TECHNOLOGY:
-		val->intval = POWER_SUPPLY_TECHNOLOGY_LIPO;
+		val->intval = POWER_SUPPLY_TECHNOLOGY_LION;
 		ret = 0;
 		break;
 
@@ -5391,7 +5727,6 @@ static enum power_supply_property ricoh61x_batt_props[] = {
 	POWER_SUPPLY_PROP_TEMP,
 	POWER_SUPPLY_PROP_TIME_TO_EMPTY_NOW,
 	POWER_SUPPLY_PROP_TIME_TO_FULL_NOW,
-	POWER_SUPPLY_PROP_CURRENT_NOW,
 #endif
 	POWER_SUPPLY_PROP_TECHNOLOGY,
 	POWER_SUPPLY_PROP_HEALTH,
@@ -5519,6 +5854,8 @@ static __devinit int ricoh61x_battery_probe(struct platform_device *pdev)
 
 	mutex_init(&info->lock);
 	platform_set_drvdata(pdev, info);
+
+	gBattery_dev = pdev;
 
 //	info->battery.name = "battery";
 	info->battery.name = "mc13892_bat";
@@ -5682,6 +6019,11 @@ static __devinit int ricoh61x_battery_probe(struct platform_device *pdev)
 	}
 
 	add_fake_soc_sysfs(&pdev->dev);
+	_create_sys_attrs(&pdev->dev);
+
+	add_power_on_reason_sysfs(info->battery.dev);
+	add_eval_curr_vals_sysfs(info->battery.dev);
+
 	return 0;
 
 out:
@@ -5787,6 +6129,8 @@ static int __devexit ricoh61x_battery_remove(struct platform_device *pdev)
 #endif
 
 	remove_fake_soc_sysfs(pdev);
+	_remove_sys_attrs(pdev);
+
 	power_supply_unregister(&info->battery);
 	kfree(info);
 	platform_set_drvdata(pdev, NULL);
@@ -5794,7 +6138,6 @@ static int __devexit ricoh61x_battery_remove(struct platform_device *pdev)
 }
 
 #ifdef CONFIG_PM
-extern void ricoh_suspend_state_sync(void);
 static int ricoh61x_battery_suspend(struct device *dev)
 {
 	struct ricoh61x_battery_info *info = dev_get_drvdata(dev);
@@ -5808,12 +6151,12 @@ static int ricoh61x_battery_suspend(struct device *dev)
 	bool is_charging = true;
 	int displayed_soc_temp;
 
-	printk("PMU: %s START ================================================================================\n", __func__);
+	SUSPEND_PRINT(KERN_DEBUG"PMU: %s START ================================================================================\n", __func__);
 	ricoh_suspend_state_sync();
 
 	get_current_time(info, &info->sleepEntryTime);
-	dev_info(info->dev, "sleep entry time : %lu secs\n",
-				info->sleepEntryTime); 
+//	dev_info(info->dev, "sleep entry time : %lu secs\n",
+//				info->sleepEntryTime);
 
 #ifdef ENABLE_MASKING_INTERRUPT_IN_SLEEP
 	ricoh61x_clr_bits(dev->parent, RICOH61x_INTC_INTEN, CHG_INT);
@@ -5854,7 +6197,7 @@ static int ricoh61x_battery_suspend(struct device *dev)
 
 			info->soca->temp_cc_delta_cap_mas += cc_cap_mas - info->soca->last_cc_delta_cap_mas;
 
-			printk("PMU : %s : Suspend : temp_cc_delta_cap_mas is %ld, cc_delta is %ld, last_cc_delta_cap_mas is %ld\n"
+			SUSPEND_PRINT(KERN_DEBUG"PMU : %s : Suspend : temp_cc_delta_cap_mas is %ld, cc_delta is %ld, last_cc_delta_cap_mas is %ld\n"
 					,__func__, info->soca->temp_cc_delta_cap_mas, cc_cap_mas, info->soca->last_cc_delta_cap_mas);
 			displayed_soc_temp = info->soca->displayed_soc;
 
@@ -5894,7 +6237,7 @@ static int ricoh61x_battery_suspend(struct device *dev)
 			cc_display2suspend = max(-400, cc_display2suspend);
 			info->soca->last_cc_rrf0 = 0;
 
-			printk("PMU : %s : Suspend : temp_cc_delta_cap_mas is %ld, cc_delta is %ld, last_cc_delta_cap_mas is %ld, cc_display2suspend is %d\n"
+			SUSPEND_PRINT(KERN_DEBUG"PMU : %s : Suspend : temp_cc_delta_cap_mas is %ld, cc_delta is %ld, last_cc_delta_cap_mas is %ld, cc_display2suspend is %d\n"
 					,__func__, info->soca->temp_cc_delta_cap_mas, cc_cap_mas, info->soca->last_cc_delta_cap_mas, cc_display2suspend);
 
 			if (info->soca->status == RICOH61x_SOCA_START
@@ -5946,7 +6289,7 @@ static int ricoh61x_battery_suspend(struct device *dev)
 			}
 
 			//info->soca->temp_cc_delta_cap_mas += cc_cap_mas - info->soca->last_cc_delta_cap_mas;
-				printk("PMU : %s : Suspend : temp_cc_delta_cap_mas is %ld, cc_delta is %ld, last_cc_delta_cap_mas is %ld\n"
+				SUSPEND_PRINT(KERN_DEBUG"PMU : %s : Suspend : temp_cc_delta_cap_mas is %ld, cc_delta is %ld, last_cc_delta_cap_mas is %ld\n"
 					,__func__, info->soca->temp_cc_delta_cap_mas, cc_cap_mas, info->soca->last_cc_delta_cap_mas);
 
 			if (info->soca->status == RICOH61x_SOCA_FULL){
@@ -5971,9 +6314,9 @@ static int ricoh61x_battery_suspend(struct device *dev)
 
 		}
 
-		printk(KERN_INFO "PMU: %s status(%d), rrf(%d), suspend_soc(%d), suspend_cc(%d)\n",
+		SUSPEND_PRINT(KERN_DEBUG "PMU: %s status(%d), rrf(%d), suspend_soc(%d), suspend_cc(%d)\n",
 		 __func__, info->soca->status, info->soca->rsoc_ready_flag, info->soca->suspend_soc, info->soca->suspend_cc);
-		printk(KERN_INFO "PMU: %s DSOC(%d), init_pswr(%d), cc_delta(%d)\n",
+		SUSPEND_PRINT(KERN_DEBUG "PMU: %s DSOC(%d), init_pswr(%d), cc_delta(%d)\n",
 		__func__, info->soca->displayed_soc, info->soca->init_pswr, info->soca->cc_delta);
 
 		if (info->soca->displayed_soc < 50) {
@@ -5996,7 +6339,7 @@ static int ricoh61x_battery_suspend(struct device *dev)
 	info->soca->cc_delta
 		 = (is_charging == true) ? cc_cap : -cc_cap;
 
-	printk(KERN_INFO "PMU: %s : STATUS(%d), DSOC(%d), RSOC(%d), init_pswr*100(%d), cc_delta(%d) ====================\n",
+	SUSPEND_PRINT(KERN_DEBUG "PMU: %s : STATUS(%d), DSOC(%d), RSOC(%d), init_pswr*100(%d), cc_delta(%d) ====================\n",
 		 __func__, info->soca->status, displayed_soc_temp,
 		 calc_capacity_2(info), info->soca->init_pswr*100, info->soca->cc_delta);
 
@@ -6028,7 +6371,7 @@ static int ricoh61x_battery_suspend(struct device *dev)
 	info->soca->store_sus_current = sus_current;
 	info->soca->store_hiber_current = hiber_current;
 
-	printk(KERN_INFO "PMU: %s : fl_current(%d), slp_state(%d), sus_current(%d), hiber_current(%d)\n",
+	SUSPEND_PRINT(KERN_DEBUG "PMU: %s : fl_current(%d), slp_state(%d), sus_current(%d), hiber_current(%d)\n",
 		 __func__, 	info->soca->store_fl_current, info->soca->store_slp_state,
 		info->soca->store_sus_current, info->soca->store_hiber_current);
 
@@ -6126,7 +6469,7 @@ static int calc_cc_value_by_sleepPeriod(struct ricoh61x_battery_info *info, unsi
 		delta_soc = min(10000, delta_soc);
 		delta_soc = max(0, delta_soc);
 
-		printk("PMU : %s : delta_cap is %ld [uAs], Period is %ld [s], fa_cap is %d [mAh], delta_soc is %ld [0.01%%], offset is %d [uAs]\n"
+		SUSPEND_PRINT(KERN_DEBUG"PMU : %s : delta_cap is %ld [uAs], Period is %ld [s], fa_cap is %d [mAh], delta_soc is %ld [0.01%%], offset is %d [uAs]\n"
 			,__func__, delta_cap, Period, fa_cap, delta_soc, info->soca->sus_cc_cap_offset);
 	}
 
@@ -6137,11 +6480,12 @@ static int calc_cc_value_by_sleepPeriod(struct ricoh61x_battery_info *info, unsi
 * get SOC value during period of Suspend/Hibernate with current method
 * info : battery info
 * Period : sleep period
+* is_low_current : flag of calculation method for sleep current
 *
 * return value : soc, unit is 0.01%
 */
 
-static int calc_soc_by_currentMethod(struct ricoh61x_battery_info *info, unsigned long Period)
+static int calc_soc_by_currentMethod(struct ricoh61x_battery_info *info, unsigned long Period, bool *is_low_current)
 {
 	int soc;
 	int sleepCurrent;	// unit is uA
@@ -6171,12 +6515,14 @@ static int calc_soc_by_currentMethod(struct ricoh61x_battery_info *info, unsigne
 		if (sleepCurrent < RICOH61x_SUS_CURRENT_THRESH) {
 			// Calculate cc_delta from [Suspend current * Sleep period]
 			info->soca->cc_delta = calc_cc_value_by_sleepPeriod(info, Period, sleepCurrent);
-			printk(KERN_INFO "PMU: %s Suspend(S/W) slp_current(%d), sus_current(%d), fl_current(%d), cc_delta(%d) ----------\n",
+			*is_low_current = true;
+			SUSPEND_PRINT(KERN_DEBUG "PMU: %s Suspend(S/W) slp_current(%d), sus_current(%d), fl_current(%d), cc_delta(%d) ----------\n",
 				 __func__, sleepCurrent, info->soca->store_sus_current, info->soca->store_fl_current, info->soca->cc_delta);
 		} else {
 			// Calculate cc_delta between Sleep-In and Sleep-Out
 			info->soca->cc_delta -= info->soca->suspend_cc;
-			printk(KERN_INFO "PMU: %s Suspend(H/W) slp_current(%d), sus_current(%d), fl_current(%d), cc_delta(%d) ----------\n",
+			*is_low_current = false;
+			SUSPEND_PRINT(KERN_DEBUG "PMU: %s Suspend(H/W) slp_current(%d), sus_current(%d), fl_current(%d), cc_delta(%d) ----------\n",
 				 __func__, sleepCurrent, info->soca->store_sus_current, info->soca->store_fl_current, info->soca->cc_delta);
 		}
 	} else {
@@ -6193,19 +6539,19 @@ static int calc_soc_by_currentMethod(struct ricoh61x_battery_info *info, unsigne
 		}
 		// Calculate cc_delta from [Hibernate current * Sleep period]
 		info->soca->cc_delta = calc_cc_value_by_sleepPeriod(info, Period, sleepCurrent);
-		printk(KERN_INFO "PMU: %s Hibernate(S/W) hiber_current(%d), cc_delta(%d) ----------\n",
+		*is_low_current = true;
+		SUSPEND_PRINT(KERN_INFO "PMU: %s Hibernate(S/W) hiber_current(%d), cc_delta(%d) ----------\n",
 			 __func__, sleepCurrent, info->soca->cc_delta);
 	}
 
 	soc = info->soca->suspend_soc + info->soca->cc_delta;
 
-	printk("PMU : %s : slp_state is %d, soc is %d [0.01%%]  ----------\n"
+	SUSPEND_PRINT(KERN_DEBUG"PMU : %s : slp_state is %d, soc is %d [0.01%%]  ----------\n"
 		, __func__, info->soca->store_slp_state, soc);
 
 	// soc range is 0~10000
 	return soc;
 }
-
 
 static int ricoh61x_battery_resume(struct device *dev)
 {
@@ -6221,14 +6567,20 @@ static int ricoh61x_battery_resume(struct device *dev)
 	unsigned long suspend_period_time;		//unit is sec
 	int soc_voltage, soc_current;
 	int resume_rsoc;
+	int fa_cap;	//unit is mAh
+	bool is_low_current = false;
 
-	printk("PMU: %s START ================================================================================\n", __func__);
+	fa_cap = (battery_init_para[info->num][22]<<8)
+					 | (battery_init_para[info->num][23]);
+
+	SUSPEND_PRINT(KERN_DEBUG"PMU: %s START ================================================================================\n", __func__);
 
 	get_current_time(info, &info->sleepExitTime);
-	dev_info(info->dev, "sleep exit time : %lu secs\n",
-				info->sleepExitTime);
-	
+//	dev_info(info->dev, "sleep exit time : %lu secs\n",
+//				info->sleepExitTime);
+
 	suspend_period_time = info->sleepExitTime - info->sleepEntryTime;
+
 
 #ifdef STANDBY_MODE_DEBUG
 	if(multiple_sleep_mode == 0) {
@@ -6240,7 +6592,7 @@ static int ricoh61x_battery_resume(struct device *dev)
 	}
 #endif
 
-	printk("PMU : %s : 	suspend_period_time is %lu, sleepExitTime is %lu sleepEntryTime is %lu ==========\n",
+	SUSPEND_PRINT(KERN_DEBUG"PMU : %s : 	suspend_period_time is %lu, sleepExitTime is %lu sleepEntryTime is %lu ==========\n",
 		 __func__, suspend_period_time,info->sleepExitTime,info->sleepEntryTime);
 	
 	/* Clear VBAT threshold Low interrupt */
@@ -6249,6 +6601,14 @@ static int ricoh61x_battery_resume(struct device *dev)
 		dev_err(info->dev, "Error in clearing VBAT ThrLow\n");
 	}
 	
+	ricoh61x_read (info->dev->parent, RICOH61x_INT_IR_ADCL, &val);
+	SUSPEND_PRINT(KERN_DEBUG"PMU : %s : 	RICOH61x_INT_IR_ADCL 0x%02X\n",	 __func__, val);
+	if (val & 0x02) {
+		printk("PMU : %s : 	Wakup by VBATL !!!!!\n", __func__);
+		queue_delayed_work(info->monitor_wqueue, &info->low_battery_work,
+						LOW_BATTERY_DETECTION_TIME*HZ);
+	}
+
 
 #ifdef ENABLE_MASKING_INTERRUPT_IN_SLEEP
 	ricoh61x_set_bits(dev->parent, RICOH61x_INTC_INTEN, CHG_INT);
@@ -6276,22 +6636,31 @@ static int ricoh61x_battery_resume(struct device *dev)
 			//this is for CC delta issue for Hibernate
 			if((info->soca->cc_delta - info->soca->suspend_cc) <= 0){
 				// Discharge Processing
-				printk(KERN_INFO "PMU: %s : Discharge Processing (rrf=0)\n", __func__);
+				SUSPEND_PRINT(KERN_DEBUG "PMU: %s : Discharge Processing (rrf=0)\n", __func__);
 
 				// Calculate SOC by Current Method
-				soc_current = calc_soc_by_currentMethod(info, suspend_period_time);
+				soc_current = calc_soc_by_currentMethod(info, suspend_period_time, &is_low_current);
 
 				// Calculate SOC by Voltage Method
 				soc_voltage = calc_soc_by_voltageMethod(info);
 
-				printk(KERN_INFO "PMU: %s : soc_current(%d), soc_voltage(%d), Diff(%d) ==========\n",
+				SUSPEND_PRINT(KERN_DEBUG "PMU: %s : soc_current(%d), soc_voltage(%d), Diff(%d) ==========\n",
 					 __func__, soc_current, soc_voltage, (soc_current - soc_voltage));
 
 				// If difference is small, use current method. If not, use voltage method.
-				if ((soc_current - soc_voltage) < 1000) {
+				if ((30 > suspend_period_time) || ((soc_current - soc_voltage) < 1000)) {
 					// Use Current method if difference is small
 					displayed_soc_temp = soc_current;
 					update_rsoc_on_currentMethod(info, soc_current);
+					if((info->soca->status == RICOH61x_SOCA_LOW_VOL) && (is_low_current == false)){
+
+						cc_cap_mas = -cc_cap_mas;
+						//info->soca->temp_cc_delta_cap_mas += cc_cap_mas - ((fa_cap * 3600) * (info->soca->cc_delta / 10000);
+						info->soca->temp_cc_delta_cap_mas += cc_cap_mas - (((fa_cap * 9) / 25) * info->soca->cc_delta);
+
+						SUSPEND_PRINT(KERN_DEBUG "PMU: %s : temp_cc_delta_cap_mas(%d), extra value(%d) ==========\n",
+							__func__,info->soca->temp_cc_delta_cap_mas, (cc_cap_mas -(((fa_cap * 9) / 25) * info->soca->cc_delta)));
+					}
 				} else {
 					// Use Voltage method if difference is large
 					displayed_soc_temp = soc_voltage;
@@ -6316,7 +6685,7 @@ static int ricoh61x_battery_resume(struct device *dev)
 						displayed_soc_temp = info->soca->suspend_soc;
 						info->soca->temp_cc_delta_cap += info->soca->cc_delta;
 						info->soca->cc_delta = info->soca->suspend_cc;
-						printk("PMU: %s : under 400 cc_delta is %d, temp_cc_delta is %d\n",
+						SUSPEND_PRINT(KERN_DEBUG"PMU: %s : under 400 cc_delta is %d, temp_cc_delta is %d\n",
 							__func__, info->soca->cc_delta, info->soca->temp_cc_delta_cap);
 					}else {
 						displayed_soc_temp = info->soca->suspend_soc + info->soca->cc_delta;
@@ -6333,27 +6702,37 @@ static int ricoh61x_battery_resume(struct device *dev)
 			info->soca->cc_delta
 				 = (is_charging == true) ? cc_cap : -cc_cap;
 			
-			printk("PMU: %s cc_delta(%d), suspend_cc(%d), Diff(%d)\n",
+			SUSPEND_PRINT(KERN_DEBUG"PMU: %s cc_delta(%d), suspend_cc(%d), Diff(%d)\n",
 				 __func__, info->soca->cc_delta, info->soca->suspend_cc, (info->soca->cc_delta - info->soca->suspend_cc));
 			//this is for CC delta issue for Hibernate
 			if((info->soca->cc_delta - info->soca->suspend_cc) <= 0){
 				// Discharge Processing
-				printk(KERN_INFO "PMU: %s : Discharge Processing (rrf=1)\n", __func__);
+				SUSPEND_PRINT(KERN_INFO "PMU: %s : Discharge Processing (rrf=1)\n", __func__);
 
 				// Calculate SOC by Current Method
-				soc_current = calc_soc_by_currentMethod(info, suspend_period_time);
+				soc_current = calc_soc_by_currentMethod(info, suspend_period_time, &is_low_current);
 
 				// Calculate SOC by Voltage Method
 				soc_voltage = calc_soc_by_voltageMethod(info);
 
-				printk(KERN_INFO "PMU: %s : soc_current(%d), soc_voltage(%d), Diff(%d)\n",
+				SUSPEND_PRINT(KERN_INFO "PMU: %s : soc_current(%d), soc_voltage(%d), Diff(%d)\n",
 					 __func__, soc_current, soc_voltage, (soc_current - soc_voltage));
 
 				// If difference is small, use current method. If not, use voltage method.
-				if ((soc_current - soc_voltage) < 1000) {
+				if ((30 > suspend_period_time) || ((soc_current - soc_voltage) < 1000)) {
 					// Use Current method if difference is small
 					displayed_soc_temp = soc_current;
 					update_rsoc_on_currentMethod(info, soc_current);
+					
+					if((info->soca->status == RICOH61x_SOCA_LOW_VOL) && (is_low_current == false)){
+
+						cc_cap_mas = -cc_cap_mas;
+						//info->soca->temp_cc_delta_cap_mas += cc_cap_mas - ((fa_cap * 3600) * (info->soca->cc_delta / 10000);
+						info->soca->temp_cc_delta_cap_mas += cc_cap_mas - (((fa_cap * 9) / 25) * info->soca->cc_delta);
+
+						SUSPEND_PRINT( "PMU: %s : temp_cc_delta_cap_mas(%d), extra value(%d) ==========\n",
+							__func__,info->soca->temp_cc_delta_cap_mas, (cc_cap_mas -(((fa_cap * 9) / 25) * info->soca->cc_delta)));
+					}
 				} else {
 					// Use Voltage method if difference is large
 					displayed_soc_temp = soc_voltage;
@@ -6366,7 +6745,7 @@ static int ricoh61x_battery_resume(struct device *dev)
 					displayed_soc_temp = info->soca->suspend_soc;
 					info->soca->temp_cc_delta_cap += info->soca->cc_delta;
 					info->soca->cc_delta = info->soca->suspend_cc;
-					printk("PMU: %s : under 400 cc_delta is %d, temp_cc_delta is %d\n",
+					SUSPEND_PRINT("PMU: %s : under 400 cc_delta is %d, temp_cc_delta is %d\n",
 						__func__, info->soca->cc_delta, info->soca->temp_cc_delta_cap);
 				}else {
 					displayed_soc_temp = info->soca->suspend_soc + info->soca->cc_delta;
@@ -6421,6 +6800,12 @@ static int ricoh61x_battery_resume(struct device *dev)
 		}
 	}
 
+	/* Enable VBAT threshold Low interrupt */
+	ret = ricoh61x_set_bits(info->dev->parent, RICOH61x_INT_EN_ADC1, 0x02);
+	if (ret < 0) {
+		dev_err(info->dev, "Error in settind VBAT ThrLow\n");
+	}
+
 	ret = calc_capacity_in_period(info, &cc_cap, &cc_cap_mas,
 					 &is_charging, 0);
 	if(is_charging == true) {
@@ -6439,7 +6824,7 @@ static int ricoh61x_battery_resume(struct device *dev)
 		
 
 
-	printk(KERN_INFO "PMU: %s : STATUS(%d), DSOC(%d), RSOC(%d), init_pswr*100(%d), cc_delta(%d) ====================\n",
+	SUSPEND_PRINT(KERN_DEBUG "PMU: %s : STATUS(%d), DSOC(%d), RSOC(%d), init_pswr*100(%d), cc_delta(%d) ====================\n",
 		 __func__, info->soca->status, displayed_soc_temp, calc_capacity_2(info), info->soca->init_pswr*100, info->soca->cc_delta);
 
 	ret = measure_vbatt_FG(info, &info->soca->Vbat_ave);

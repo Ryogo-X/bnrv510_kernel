@@ -311,13 +311,9 @@ int gpiofn_unregister(GPIODATA *I_ptGPIO_Data)
 }
 
 
-int gpiofn_suspend(void)
+static int __rechk_gpio_fn(void)
 {
-	return 0;
-}
-
-void gpiofn_resume(void)
-{
+	
 	if(gIsGPIOFN_inited) {
 		struct list_head *ptr;
 		GPIODATA *ptGPIO_Data;
@@ -329,7 +325,26 @@ void gpiofn_resume(void)
 			DBG_MSG("%s(),recheck gpio \"%s\"\n",__FUNCTION__,ptGPIO_Data->szName);
 			gpio_int_checker((unsigned long)ptGPIO_Data);
 		}
+		return 0;
 	}
+	else {
+		return -1;
+	}
+}
+
+void gpiofn_rechk(void)
+{
+	__rechk_gpio_fn();
+}
+
+int gpiofn_suspend(void)
+{
+	return 0;
+}
+
+void gpiofn_resume(void)
+{
+	__rechk_gpio_fn();
 }
 
 int gpiofn_init(void)

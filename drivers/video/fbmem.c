@@ -1093,11 +1093,17 @@ static long do_fb_ioctl(struct fb_info *info, unsigned int cmd,
 		ret = copy_to_user(argp, &var, sizeof(var)) ? -EFAULT : 0;
 		#ifdef _FORCE_REPORT_4BIT //[ gallen test .
 		{
-			if(gptHWCFG&&0==gptHWCFG->m_val.bUIStyle) {
+			if( gptHWCFG ) {
+
+			    printk("FBIOGET_VSCREENINFO: bUIStyle=%d bDisplayResolution=%d\n",
+					gptHWCFG->m_val.bUIStyle,
+					gptHWCFG->m_val.bDisplayResolution
+					);
+
+			    if ( ((0==gptHWCFG->m_val.bUIStyle) ||(2==gptHWCFG->m_val.bUIStyle)) ) {
 				struct fb_var_screeninfo *pvar;
 				
 				pvar=(struct fb_var_screeninfo *)(argp);
-				
 				
 				pvar->bits_per_pixel = 4;
 				pvar->grayscale = 1;
@@ -1120,16 +1126,31 @@ static long do_fb_ioctl(struct fb_info *info, unsigned int cmd,
 					pvar->yres = 1440;
 				}
 				else if (5==gptHWCFG->m_val.bDisplayResolution) {
-					pvar->xres_virtual = 1072;
-					pvar->yres_virtual = 1448;
-					pvar->xres = 1072;
-					pvar->yres = 1448;
+					pvar->xres_virtual = 1472;
+					pvar->yres_virtual = 3456;
+					pvar->xres = 1448;
+					pvar->yres = 1072;
+					pvar->width= 121;
+					pvar->height = 89;
+					pvar->red.offset=11;
+					pvar->red.length=5;
+					pvar->green.offset=5;
+					pvar->green.length=6;
+					pvar->blue.offset=0;
+					pvar->green.length=5;
+					pvar->bits_per_pixel=16;
 				}
 				else if (6==gptHWCFG->m_val.bDisplayResolution) {
 					pvar->xres_virtual = 1200;
 					pvar->yres_virtual = 1600;
 					pvar->xres = 1200;
 					pvar->yres = 1600;
+				}
+				else if (8==gptHWCFG->m_val.bDisplayResolution) {
+					pvar->xres_virtual = 1404;
+					pvar->yres_virtual = 1872;
+					pvar->xres = 1404;
+					pvar->yres = 1872;
 				}
 				else if (2==gptHWCFG->m_val.bDisplayResolution) {
 					pvar->xres_virtual = 768;
@@ -1143,6 +1164,7 @@ static long do_fb_ioctl(struct fb_info *info, unsigned int cmd,
 					pvar->xres = 600;
 					pvar->yres = 800;
 				}
+			    }
 			}
 		}
 		#endif//]_FORCE_REPORT_4BIT
@@ -1648,6 +1670,7 @@ static int do_register_framebuffer(struct fb_info *fb_info)
 	struct fb_event event;
 	struct fb_videomode mode;
 
+
 	if (fb_check_foreignness(fb_info))
 		return -ENOSYS;
 
@@ -1705,6 +1728,7 @@ static int do_register_framebuffer(struct fb_info *fb_info)
 		return -ENODEV;
 	fb_notifier_call_chain(FB_EVENT_FB_REGISTERED, &event);
 	unlock_fb_info(fb_info);
+
 	return 0;
 }
 

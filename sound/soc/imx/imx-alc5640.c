@@ -48,7 +48,7 @@
 struct imx_priv {
 	int sysclk;         /*mclk from the outside*/
 	int codec_sysclk;
-	int dai_hifi;
+	int dai_aif1;
 	int hp_irq;
 	int hp_status;
 	struct platform_device *pdev;
@@ -62,7 +62,7 @@ static struct imx_priv card_priv;
 static struct snd_soc_card snd_soc_card_imx;
 static struct snd_soc_codec *gcodec;
 
-static int imx_hifi_startup(struct snd_pcm_substream *substream)
+static int imx_aif1_startup(struct snd_pcm_substream *substream)
 {
 	struct snd_soc_pcm_runtime *rtd = substream->private_data;
 	struct snd_soc_dai *codec_dai = rtd->codec_dai;
@@ -78,7 +78,7 @@ static int imx_hifi_startup(struct snd_pcm_substream *substream)
 	return 0;
 }
 
-static void imx_hifi_shutdown(struct snd_pcm_substream *substream)
+static void imx_aif1_shutdown(struct snd_pcm_substream *substream)
 {
 	struct snd_soc_pcm_runtime *rtd = substream->private_data;
 	struct snd_soc_dai *codec_dai = rtd->codec_dai;
@@ -92,7 +92,7 @@ static void imx_hifi_shutdown(struct snd_pcm_substream *substream)
 	return;
 }
 
-static int imx_hifi_hw_params(struct snd_pcm_substream *substream,
+static int imx_aif1_hw_params(struct snd_pcm_substream *substream,
 				     struct snd_pcm_hw_params *params)
 {
 	struct snd_soc_pcm_runtime *rtd = substream->private_data;
@@ -138,7 +138,7 @@ static int imx_hifi_hw_params(struct snd_pcm_substream *substream,
 	if (sample_format == SNDRV_PCM_FORMAT_S24_LE)
 		pll_out = sample_rate * 192;
 	else
-		pll_out = sample_rate * 256;
+		pll_out = sample_rate * 256 * 2;
 
 	ret = snd_soc_dai_set_pll(codec_dai, RT5640_PLL1_S_MCLK,
 				  RT5640_PLL1_S_MCLK, priv->sysclk,
@@ -146,10 +146,7 @@ static int imx_hifi_hw_params(struct snd_pcm_substream *substream,
 	if (ret < 0)
 		pr_err("Failed to start FLL: %d\n", ret);
 
-	ret = snd_soc_dai_set_sysclk(codec_dai, RT5640_PLL1_S_MCLK,
-					 card_priv.sysclk,
-					 SND_SOC_CLOCK_IN);
-	ret = snd_soc_dai_set_sysclk(codec_dai, RT5640_PLL1_S_MCLK, card_priv.sysclk, 0);
+	ret = snd_soc_dai_set_sysclk(codec_dai, RT5640_SCLK_S_PLL1, pll_out, 0);
 	if (ret < 0) {
 		pr_err("Failed to set SYSCLK: %d\n", ret);
 		return ret;
@@ -160,17 +157,18 @@ static int imx_hifi_hw_params(struct snd_pcm_substream *substream,
 
 static const struct snd_soc_dapm_widget alc5640_dapm_widgets[] = {
 	SND_SOC_DAPM_HP("Headphone Jack", NULL),
-	SND_SOC_DAPM_SPK("Speaker", NULL),
+	//SND_SOC_DAPM_SPK("Speaker", NULL),
 };
 
 static const struct snd_soc_dapm_route alc5640_route[] = {
 	{ "Headphone Jack",	NULL,	"HPOL" },
 	{ "Headphone Jack",	NULL,	"HPOR" },
-
+#if 0
 	{"Speaker",		NULL,	"SPOLP"},
 	{"Speaker",		NULL,	"SPOLN"},
 	{"Speaker",		NULL,	"SPORP"},
 	{"Speaker",		NULL,	"SPORN"},
+#endif
 };
 
 static int imx_alc5640_init(struct snd_soc_pcm_runtime *rtd)
@@ -178,13 +176,14 @@ static int imx_alc5640_init(struct snd_soc_pcm_runtime *rtd)
 	struct snd_soc_codec *codec = rtd->codec;
 	struct snd_soc_dapm_context *dapm = &codec->dapm;
 
+	printk ("[%s-%d] ...\n", __func__, __LINE__);
 	snd_soc_dapm_new_controls(dapm, alc5640_dapm_widgets,
 				ARRAY_SIZE(alc5640_dapm_widgets));
 
 	snd_soc_dapm_add_routes(dapm, alc5640_route, ARRAY_SIZE(alc5640_route));
 
 	snd_soc_dapm_enable_pin(dapm, "Headphone Jack");
-	snd_soc_dapm_enable_pin(dapm, "Speaker");
+//	snd_soc_dapm_enable_pin(dapm, "Speaker");
 
 	snd_soc_dapm_sync(dapm);
 
@@ -193,22 +192,22 @@ static int imx_alc5640_init(struct snd_soc_pcm_runtime *rtd)
 	return 0;
 }
 
-static struct snd_soc_ops imx_hifi_ops = {
-	.hw_params = imx_hifi_hw_params,
-	.startup = imx_hifi_startup,
-	.shutdown = imx_hifi_shutdown,
+static struct snd_soc_ops imx_aif1_ops = {
+	.hw_params = imx_aif1_hw_params,
+	.startup = imx_aif1_startup,
+	.shutdown = imx_aif1_shutdown,
 };
 
 static struct snd_soc_dai_link imx_dai[] = {
 	{
 		.name = "ALC5640",
-		.stream_name = "ALC5640 HiFi",
+		.stream_name = "ALC5640 AIF1",
 		.codec_dai_name	= "rt5640-aif1",
-		.codec_name	= "rt5640.2-001a",
+		.codec_name	= "rt5640.0-001c",
 		.cpu_dai_name	= "imx-ssi.1",
 		.platform_name	= "imx-pcm-audio.1",
 		.init		= imx_alc5640_init,
-		.ops		= &imx_hifi_ops,
+		.ops		= &imx_aif1_ops,
 	},
 };
 
@@ -260,6 +259,7 @@ static int __devinit imx_alc5640_probe(struct platform_device *pdev)
 
 	priv->sysclk = plat->sysclk;
 
+#ifdef CONFIG_ANDROID
 	priv->sdev.name = "h2w";
 	ret = switch_dev_register(&priv->sdev);
 	if (ret < 0) {
@@ -278,7 +278,7 @@ static int __devinit imx_alc5640_probe(struct platform_device *pdev)
 		priv->hp_status = plat->hp_active_low;
 		switch_set_state(&priv->sdev, 0);
 	}
-	
+#endif	
 	priv->amp_enable = plat->amp_enable;
 	if (priv->amp_enable)
 		priv->amp_enable(1);
@@ -299,9 +299,9 @@ static int __devexit imx_alc5640_remove(struct platform_device *pdev)
 
 	if (plat->finit)
 		plat->finit();
-
+#ifdef CONFIG_ANDROID
 	switch_dev_unregister(&priv->sdev);
-
+#endif
 	return 0;
 }
 
@@ -320,11 +320,12 @@ static int __init imx_asoc_init(void)
 {
 	int ret;
 
+	printk ("[alc5640 %s-%d] ...\n", __func__, __LINE__);
 	ret = platform_driver_register(&imx_alc5640_driver);
 	if (ret < 0)
 		goto exit;
 
-	imx_snd_device = platform_device_alloc("soc-audio", 5);
+	imx_snd_device = platform_device_alloc("soc-audio", -1);
 	if (!imx_snd_device)
 		goto err_device_alloc;
 

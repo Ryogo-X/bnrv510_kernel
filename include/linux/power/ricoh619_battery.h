@@ -47,7 +47,6 @@
 #define VSYSDATAL_REG	0x71
 
 #define CHGCTL1_REG		0xB3
-#define CHGCTL2_REG		0xB4
 #define	REGISET1_REG	0xB6
 #define	REGISET2_REG	0xB7
 #define	CHGISET_REG		0xB8
@@ -152,9 +151,11 @@ struct ricoh619_battery_platform_data {
 
 // return value of ricoh619_charger_detect() .
 #define NO_CHARGER_PLUGGED	0
-#define UNKOWN_CHARGER		0x0101
-#define SDP_CHARGER				0x0001
-#define CDP_CHARGER				0x0011
-#define DCP_CHARGER				0x0021
+#define UNKOWN_CHARGER			0x0101
+#define SDP_PC_CHARGER			0x0001
+#define CDP_CHARGER					0x0011
+#define DCP_CHARGER					0x0021
+#define SDP_ADPT_CHARGER		0x8000 // not in register definitions .
 
 #endif
+

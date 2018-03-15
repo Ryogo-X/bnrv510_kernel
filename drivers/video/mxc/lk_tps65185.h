@@ -1,6 +1,7 @@
 #ifndef LK_TPS65185_H//[
 #define LK_TPS65185_H
 
+#define TPS65185_VDROP_PROC_IN_KERNEL		1
 
 #define TPS65185_RET_ALLPOWEROFF		(2) // all power is turned off .
 #define TPS65185_RET_ALLPOWERGOOD		(1) // all power is good .
@@ -49,5 +50,12 @@ void tps65185_shutdown(void);
 
 int tps65185_ONOFF(int iIsON);
 int tps65185_set_ep3v3_pwrdn_delay_ticks(unsigned long dwTicks);
+
+int tps65185_int_state_get(void);
+int tps65185_int_state_clear(void);
+
+typedef void *(TPS65185_INTEVT_CB)(int iEVENT);
+
+int tps65185_int_callback_setup(TPS65185_INTEVT_CB fnCB);
 
 #endif //]LK_TPS65185_H

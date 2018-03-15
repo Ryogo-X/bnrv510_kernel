@@ -62,6 +62,8 @@
 	#define USE_BSP_PMIC 1
 #endif //]CONFIG_MACH_MX6SL_NTX
 
+
+
 #define GDEBUG 0
 #define giDbgLvl 	1000
 #include <linux/gallen_dbg.h>
@@ -72,13 +74,20 @@
 #define NTX_AUTOMODE_PATCH		1
 #define NTX_WFM_MODE_OPTIMIZED 1
 //#define NTX_WFM_MODE_OPTIMIZED_REAGL	1
+
 #if defined(CONFIG_ANDROID)//[
 	//#define NO_AUTO_REAGL_MODE		1
 	//#define NO_CUS_REAGL_MODE		1
 #else //][!CONFIG_ANDROID
 	#define NO_AUTO_REAGL_MODE		1
 	//#define NO_CUS_REAGL_MODE		1
+	
+	#if defined(TPS65185_VDROP_PROC_IN_KERNEL)//[
+		#define VDROP_PROC_IN_KERNEL		1
+	#endif //] defined(TPS65185_VDROP_PROC_IN_KERNEL)
+
 #endif//] CONFIG_ANDROID
+
 #include "eink_processing2.h"
 
 /*******************************************
@@ -672,6 +681,10 @@ void fetch_Epdc_Pmic_Voltages( struct epd_vc_data *vcd, struct mxc_epdc_fb_data 
 	}
 }
 
+#ifdef CONFIG_MACH_MX6SL_NTX//[
+	#include "mxc_epdc_fake_s1d13522.c"
+#endif//]CONFIG_MACH_MX6SL_NTX
+
 /********************************************************
  * Start Low-Level EPDC Functions
  ********************************************************/
@@ -763,6 +776,8 @@ static inline void epdc_set_update_coord(u32 x, u32 y)
 	DBG_MSG("%s(),x=%hd,y=%hd\n",__FUNCTION__,x,y);
 	u32 val = (y << EPDC_UPD_CORD_YCORD_OFFSET) | x;
 	__raw_writel(val, EPDC_UPD_CORD);
+
+	ntx_epdc_set_update_coord(x,y);
 }
 
 static inline void epdc_set_update_dimensions(u32 width, u32 height)
@@ -770,6 +785,8 @@ static inline void epdc_set_update_dimensions(u32 width, u32 height)
 	DBG_MSG("%s(),w=%hd,h=%hd\n",__FUNCTION__,width,height);
 	u32 val = (height << EPDC_UPD_SIZE_HEIGHT_OFFSET) | width;
 	__raw_writel(val, EPDC_UPD_SIZE);
+	
+	ntx_epdc_set_update_dimensions(width,height);
 }
 
 static void epdc_set_update_waveform(struct mxcfb_waveform_modes *wv_modes)
@@ -1399,10 +1416,6 @@ static void epdc_init_settings(struct mxc_epdc_fb_data *fb_data)
 	clk_disable(fb_data->epdc_clk_pix);
 }
 
-#ifdef CONFIG_MACH_MX6SL_NTX//[
-	#include "mxc_epdc_fake_s1d13522.c"
-#endif//]CONFIG_MACH_MX6SL_NTX
-
 static void epdc_powerup(struct mxc_epdc_fb_data *fb_data)
 {
 	struct epd_vc_data vcd;
@@ -1766,7 +1779,7 @@ static int mxc_epdc_fb_mmap(struct fb_info *info, struct vm_area_struct *vma)
 	if (remap_pfn_range(vma, vma->vm_start, vma->vm_pgoff,
 			    vma->vm_end - vma->vm_start, vma->vm_page_prot)) {
 		GALLEN_DBGLOCAL_ESC();
-		dev_dbg(info->device, "mmap remap_pfn_range failed\n");
+		dev_err(info->device, "mmap remap_pfn_range failed\n");
 		return -ENOBUFS;
 	}
 
@@ -2187,6 +2200,7 @@ static int mxc_epdc_fb_check_var(struct fb_var_screeninfo *var,
 	struct mxc_epdc_fb_data *fb_data = (struct mxc_epdc_fb_data *)info;
 	int iNative_Width=-1;
 	int iNative_Height=-1;
+	int iPageScale=1;
 
 	GALLEN_DBGLOCAL_BEGIN();
 
@@ -2344,6 +2358,14 @@ static int mxc_epdc_fb_check_var(struct fb_var_screeninfo *var,
 		iNative_Width = 139;
 		iNative_Height = 104;
 		break;
+	case 16:
+	case 17:
+	case 18:
+	case 19:
+		// 7.8 inch .
+		iNative_Width = 157;
+		iNative_Height = 118;
+		break;
 	}
 	switch (var->rotate) {
 	case FB_ROTATE_UR:
@@ -2371,11 +2393,21 @@ static int mxc_epdc_fb_check_var(struct fb_var_screeninfo *var,
 		return -EINVAL;
 	}
 
+	if(var->bits_per_pixel>fb_data->default_bpp) {
+		iPageScale = var->bits_per_pixel/fb_data->default_bpp ;
+		if(var->bits_per_pixel%fb_data->default_bpp) {
+			iPageScale += 1;
+		}
+	}
+
 	var->xres_virtual = ALIGN(var->xres, 32);
-	var->yres_virtual = ALIGN(var->yres, 128) * fb_data->num_screens;
+	var->yres_virtual = ALIGN(var->yres, 128) * fb_data->num_screens/iPageScale;
 
-	epdfbdc_set_width_height(gptDC,ALIGN(var->xres, 32),ALIGN(var->yres, 128),var->xres,var->yres);
+	gptDC->bPixelBits = var->bits_per_pixel;
+	epdfbdc_set_width_height(gptDC,var->xres_virtual,var->yres_virtual,var->xres,var->yres);
 
+	var->height = -1;
+	var->width = -1;
 
 	GALLEN_DBGLOCAL_END();
 	return 0;
@@ -3002,6 +3034,7 @@ static int epdc_process_update(struct update_data_list *upd_data_list,
 			hist_stat, upd_desc_list->upd_data.waveform_mode);
 	}
 
+
 	GALLEN_DBGLOCAL_END();
 	return 0;
 }
@@ -3475,7 +3508,7 @@ static void epdc_submit_work_func(struct work_struct *work)
 
 		/* Perform PXP processing - EPDC power will also be enabled */
 		if (epdc_process_update(upd_data_list, fb_data)) {
-			dev_dbg(fb_data->dev, "PXP processing error.\n");
+			dev_err(fb_data->dev, "PXP processing error.\n");
 			/* Protect access to buffer queues and to update HW */
 			mutex_lock(&fb_data->queue_mutex);
 			list_del_init(&upd_data_list->update_desc->list);
@@ -3920,36 +3953,6 @@ static int mxc_epdc_fb_send_single_update(struct mxcfb_update_data *upd_data,
 		//upd_data->update_mode = UPDATE_MODE_PARTIAL;
 	}
 
-#ifdef OUTPUT_SNAPSHOT_IMGFILE //[
-	if(2==giFB_snapshot_enable) {
-		int iChk;	
-		// capture partial update retangle of framebuffer .
-		// 
-
-		iChk = fb_capture_ex(gptDC,\
-			(int)upd_data->update_region.left,\
-			(int)upd_data->update_region.top,\
-			(int)upd_data->update_region.width,\
-			(int)upd_data->update_region.height,\
-			8,EPDFB_R_0,gcFB_snapshot_pathA,\
-			(unsigned long) giFB_snapshot_total);
-
-		if( 1==giFB_snapshot_repeat && 1==iChk) {
-			giFB_snapshot_enable = 0;
-		}
-	}
-	else if(1==giFB_snapshot_enable){
-		int iChk;
-
-		iChk = fb_capture_ex(gptDC,0,0,gptDC->dwWidth,gptDC->dwHeight,
-			8,EPDFB_R_0,gcFB_snapshot_pathA,\
-			(unsigned long) giFB_snapshot_total);
-
-		if( 1==giFB_snapshot_repeat && 1==iChk) {
-			giFB_snapshot_enable = 0;
-		}
-	}
-#endif //]OUTPUT_SNAPSHOT_IMGFILE
 	/* Has EPDC HW been initialized? */
 	if (!fb_data->hw_ready) {
 		/* Throw message if we are not mid-initialization */
@@ -4018,6 +4021,11 @@ static int mxc_epdc_fb_send_single_update(struct mxcfb_update_data *upd_data,
 			dev_err(fb_data->dev,
 				"Invalid physical address for alternate "
 				"buffer.  Aborting update...\n");
+			
+			printk("smem@0x%p,sz=%ld,alt buf phy addr@%p\n",
+					fb_data->info.fix.smem_start,
+					fb_data->map_size,
+					upd_data->alt_buffer_data.phys_addr);
 
 			GALLEN_DBGLOCAL_ESC();
 			return -EINVAL;
@@ -4214,6 +4222,44 @@ static int mxc_epdc_fb_send_single_update(struct mxcfb_update_data *upd_data,
 	}
 #endif //]
 
+#ifdef OUTPUT_SNAPSHOT_IMGFILE //[
+	if(2==giFB_snapshot_enable) {
+		int iChk;	
+		// capture partial update retangle of framebuffer .
+		// 
+
+		iChk = fb_capture_ex(gptDC,\
+			(int)upd_data->update_region.left,\
+			(int)upd_data->update_region.top,\
+			(int)upd_data->update_region.width,\
+			(int)upd_data->update_region.height,\
+			8,EPDFB_R_0,gcFB_snapshot_pathA,\
+			(unsigned long) giFB_snapshot_total,\
+			upd_desc->upd_data.waveform_mode,\
+			(upd_desc->upd_data.update_mode==UPDATE_MODE_FULL)?1:0);
+
+		if( giFB_snapshot_repeat>0 && 1==iChk) {
+			if(0==--giFB_snapshot_repeat) {
+				giFB_snapshot_enable = 0;
+			}
+		}
+	}
+	else if(1==giFB_snapshot_enable){
+		int iChk;
+
+		iChk = fb_capture_ex(gptDC,0,0,gptDC->dwWidth,gptDC->dwHeight,
+			8,EPDFB_R_0,gcFB_snapshot_pathA,\
+			(unsigned long) giFB_snapshot_total,\
+			upd_desc->upd_data.waveform_mode,\
+			(upd_desc->upd_data.update_mode==UPDATE_MODE_FULL)?1:0);
+
+		if( giFB_snapshot_repeat>0 && 1==iChk) {
+			if(0==--giFB_snapshot_repeat) {
+				giFB_snapshot_enable = 0;
+			}
+		}
+	}
+#endif //]OUTPUT_SNAPSHOT_IMGFILE
 
 
 #if 1//[
@@ -4458,6 +4504,16 @@ static int mxc_epdc_fb_send_single_update(struct mxcfb_update_data *upd_data,
 			   upd_data_list->update_desc->wb_pause, false, 0);
 
 	mutex_unlock(&fb_data->queue_mutex);
+
+	if(EPD_PMIC_EXCEPTION_STATE_REUPDATE_INIT==ntx_epdc_pmic_get_exception_state()) {
+#ifdef VDROP_PROC_IN_KERNEL //[
+#else //][!VDROP_PROC_IN_KERNEL
+		dev_err(fb_data->dev, "send update failed : EPD PMIC get exceptions !!!\n");
+		GALLEN_DBGLOCAL_ESC();
+#endif
+		ntx_epdc_pmic_exception_state_clear();
+	}
+
 	GALLEN_DBGLOCAL_END();
 	return 0;
 }
@@ -4613,6 +4669,16 @@ int mxc_epdc_fb_wait_update_complete(struct mxcfb_update_marker_data *marker_dat
 
 	flush_cache_all();
 	outer_flush_all();
+
+	if(EPD_PMIC_EXCEPTION_STATE_REUPDATE_INIT==ntx_epdc_pmic_get_exception_state()) {
+#ifdef VDROP_PROC_IN_KERNEL //[
+#else //][!VDROP_PROC_IN_KERNEL
+		ret = -EMEDIUMTYPE;
+		dev_err(fb_data->dev, "wait compelete failed : EPD PMIC get exceptions !!!\n");
+#endif //] VDROP_PROC_IN_KERNEL
+		ntx_epdc_pmic_exception_state_clear();
+	}
+
 	GALLEN_DBGLOCAL_END();
 	return ret;
 }
@@ -4736,7 +4802,25 @@ static int mxc_epdc_fb_ioctl(struct fb_info *info, unsigned int cmd,
 			struct mxcfb_update_data upd_data;
 			if (!copy_from_user(&upd_data, argp,
 				sizeof(upd_data))) {
+				if(EPD_PMIC_EXCEPTION_STATE_REUPDATING==ntx_epdc_pmic_get_exception_state()) {
+					printk(KERN_ERR"%s(%d):sending update when pmic exception processing ! scr.w=%d,scr.h=%d,upd.w=%d,upd.h=%d\n",
+							__FUNCTION__,__LINE__,g_fb_data->native_width,g_fb_data->native_height,
+							upd_data.update_region.width,upd_data.update_region.height);
+					if(g_fb_data->native_width==upd_data.update_region.width && 
+					 g_fb_data->native_height==upd_data.update_region.height )
+					{
+						ntx_epdc_pmic_exception_abort();
+					}
+					else {
+						ntx_epdc_pmic_wait_exception_rect_reupdate(info);
+					}
+
+				}
 				ret = mxc_epdc_fb_send_update(&upd_data, info);
+				if(-EMEDIUMTYPE==ret) {
+					printk(KERN_ERR"%s(%d):detected contents unable to update on screen !\n",__FUNCTION__,__LINE__);
+					return -EMEDIUMTYPE;
+				}
 				if (ret == 0 && copy_to_user(argp, &upd_data,
 					sizeof(upd_data)))
 					ret = -EFAULT;
@@ -4748,6 +4832,40 @@ static int mxc_epdc_fb_ioctl(struct fb_info *info, unsigned int cmd,
 		}
 
 #ifdef MX50_IOCTL_IF//[
+	case MXCFB_SEND_UPDATE_ORG:GALLEN_DBGLOCAL_RUNLOG(4);
+		//printk("\n==> MXCFB_SEND_UPDATE\n");															 
+		{
+			struct mxcfb_update_data_org upd_data;
+			if (!copy_from_user(&upd_data, argp,
+				sizeof(upd_data))) {
+				if(EPD_PMIC_EXCEPTION_STATE_REUPDATING==ntx_epdc_pmic_get_exception_state()) {
+					printk(KERN_ERR"%s(%d):sending update when pmic exception processing ! scr.w=%d,scr.h=%d,upd.w=%d,upd.h=%d\n",
+							__FUNCTION__,__LINE__,g_fb_data->native_width,g_fb_data->native_height,
+							upd_data.update_region.width,upd_data.update_region.height);
+					if(g_fb_data->native_width==upd_data.update_region.width && 
+					 g_fb_data->native_height==upd_data.update_region.height )
+					{
+						ntx_epdc_pmic_exception_abort();
+					}
+					else {
+						ntx_epdc_pmic_wait_exception_rect_reupdate(info);
+					}
+
+				}
+				ret = mxc_epdc_fb_send_update(&upd_data, info);
+				if(-EMEDIUMTYPE==ret) {
+					printk(KERN_ERR"%s(%d):detected contents unable to update on screen !\n",__FUNCTION__,__LINE__);
+					return -EMEDIUMTYPE;
+				}
+				if (ret == 0 && copy_to_user(argp, &upd_data,
+					sizeof(upd_data)))
+					ret = -EFAULT;
+			} else {
+				ret = -EFAULT;
+			}
+
+			break;
+		}
 	case MXCFB_WAIT_FOR_UPDATE_COMPLETE:GALLEN_DBGLOCAL_RUNLOG(10);
 		//printk("\n==> MXCFB_WAIT_FOR_UPDATE_COMPLETE mx50\n");															 
 		{
@@ -4765,6 +4883,12 @@ static int mxc_epdc_fb_ioctl(struct fb_info *info, unsigned int cmd,
 					GALLEN_DBGLOCAL_PRINTMSG("MXCFB_WAIT_FOR_UPDATE_COMPLETE marker=%d\n",update_marker);
 					ret = mxc_epdc_fb_wait_update_complete(p_mxc_upd_marker_data,info);
 					kfree(p_mxc_upd_marker_data);
+
+					if(-EMEDIUMTYPE==ret) {
+						printk(KERN_ERR"%s(%d):detected contents unable to update on screen ! return(%d)\n",__FUNCTION__,__LINE__,ret);
+						return -EMEDIUMTYPE;
+					}
+					ntx_epdc_pmic_wait_exception_rect_reupdate(info);
 				}
 				else {
 					printk(KERN_ERR"%s(%d):memory not enough !\n",__FILE__,__LINE__);
@@ -4785,9 +4909,18 @@ static int mxc_epdc_fb_ioctl(struct fb_info *info, unsigned int cmd,
 				sizeof(upd_marker_data))) {
 				ret = mxc_epdc_fb_wait_update_complete(
 					&upd_marker_data, info);
-				if (copy_to_user(argp, &upd_marker_data,
-					sizeof(upd_marker_data)))
-					ret = -EFAULT;
+
+				if(-EMEDIUMTYPE==ret) {
+					printk(KERN_ERR"%s(%d):detected contents unable to update on screen !,return %d\n",__FUNCTION__,__LINE__,ret);
+					return -EMEDIUMTYPE;
+				}
+				else {
+
+					if (copy_to_user(argp, &upd_marker_data,
+						sizeof(upd_marker_data)))
+						ret = -EFAULT;
+				}
+				ntx_epdc_pmic_wait_exception_rect_reupdate(info);
 			} else {
 				ret = -EFAULT;
 			}
@@ -5073,6 +5206,8 @@ static int mxc_epdc_fb_pan_display(struct fb_var_screeninfo *var,
 
 	fb_data->epdc_fb_var.xoffset = var->xoffset;
 	fb_data->epdc_fb_var.yoffset = var->yoffset;
+
+	k_fake_s1d13522_pan_display(var->xoffset,var->yoffset);
 
 	if (var->vmode & FB_VMODE_YWRAP)
 		info->var.vmode |= FB_VMODE_YWRAP;
@@ -6222,6 +6357,10 @@ static void mxc_epdc_fb_fw_handler(const struct firmware *fw,
 		printk("%s(%d):EPD 1600x1200 \n",__FILE__,__LINE__);
 		fb_data->cur_mode = &fb_data->pdata->epdc_mode[7];//
 	}
+	else if(8==gptHWCFG->m_val.bDisplayResolution) {
+		printk("%s(%d):EPD 1872x1404 \n",__FILE__,__LINE__);
+		fb_data->cur_mode = &fb_data->pdata->epdc_mode[9];//
+	}
 	else if(2==gptHWCFG->m_val.bDisplayResolution) {
 		printk("%s(%d):EPD 1024x768 \n",__FILE__,__LINE__);
 		fb_data->cur_mode = &fb_data->pdata->epdc_mode[3];//
@@ -6229,9 +6368,17 @@ static void mxc_epdc_fb_fw_handler(const struct firmware *fw,
 	else
 	{
 		unsigned char *pbWFHdr = (unsigned char *)(fw->data);
-		//if(*(pbWFHdr+0x15)==0xd5)// AMEPD is ED060SCQ .
-		if(gptHWCFG->m_val.bPCB>=46)
+		if(gptHWCFG->m_val.bPCB>=58) 
 		{
+			// PCB >= E60QJX ...
+			//(*(pbWFHdr+0x15)==0x4d)// AMEPD is ED060SCT .
+			printk("%s(%d):using parameters of ED060SCT \n",__FILE__,__LINE__);
+			fb_data->cur_mode = &fb_data->pdata->epdc_mode[10];// .
+		}
+		else if(gptHWCFG->m_val.bPCB>=46)
+		{
+			// PCB >= E60Q9X ...
+			//(*(pbWFHdr+0x15)==0xd5)// AMEPD is ED060SCQ .
 			printk("%s(%d):using parameters of ED060SCQ \n",__FILE__,__LINE__);
 			fb_data->cur_mode = &fb_data->pdata->epdc_mode[8];// .
 		}
@@ -6416,7 +6563,7 @@ static void mxc_epdc_fb_fw_handler(const struct firmware *fw,
 			fb_data->waveform_xwi_string = (char *) kmalloc(strLength + 1, GFP_KERNEL);
 			if (mxc_epdc_fb_fetch_wxi_data(fb_data->waveform_xwi_buffer, fb_data->waveform_xwi_string) > 0) 
 			{
-				fb_data->waveform_xwi_string[strLength+1] = '\0';
+				fb_data->waveform_xwi_string[strLength] = '\0';
 				fb_data->waveform_xwi_string_length = strLength;
 				//xwiString[strLength+1] = '\0';
 				dev_info(fb_data->dev, "     Extra Waveform Data: %s\n",fb_data->waveform_xwi_string);
@@ -6730,14 +6877,27 @@ int __devinit mxc_epdc_fb_probe(struct platform_device *pdev)
 		printk("%s(%d):EPD 1600x1200 \n",__FILE__,__LINE__);
 		fb_data->cur_mode = &fb_data->pdata->epdc_mode[7];//
 	}
+	else if(8==gptHWCFG->m_val.bDisplayResolution) {
+		printk("%s(%d):EPD 1872x1404 \n",__FILE__,__LINE__);
+		fb_data->cur_mode = &fb_data->pdata->epdc_mode[9];//
+	}
 	else if(2==gptHWCFG->m_val.bDisplayResolution) {
 		printk("%s(%d):EPD 1024x768 \n",__FILE__,__LINE__);
 		fb_data->cur_mode = &fb_data->pdata->epdc_mode[3];//
 	}
-	else 
 #endif //]CONFIG_MACH_MX6SL_NTX
-	{
-		fb_data->cur_mode = &fb_data->pdata->epdc_mode[0];
+	else {
+		if(gptHWCFG->m_val.bPCB>=58) {
+			// use SCT digital timing . 
+			fb_data->cur_mode = &fb_data->pdata->epdc_mode[10];
+		}
+		else if(gptHWCFG->m_val.bPCB>=46) {
+			// use SCQ digital timing . 
+			fb_data->cur_mode = &fb_data->pdata->epdc_mode[8];
+		}
+		else {
+			fb_data->cur_mode = &fb_data->pdata->epdc_mode[0];
+		}
 	}
 
 	if(panel_str) {
@@ -6800,7 +6960,13 @@ int __devinit mxc_epdc_fb_probe(struct platform_device *pdev)
 	} else
 		fb_data->num_screens = NUM_SCREENS_MIN;
 
-	fb_data->map_size = buf_size * fb_data->num_screens;
+	if(0==gptHWCFG->m_val.bUIStyle) {
+		fb_data->map_size = buf_size * fb_data->num_screens * 2;
+	}
+	else {
+		fb_data->map_size = buf_size * fb_data->num_screens;
+	}
+
 	dev_dbg(&pdev->dev, "memory to allocate: %d\n", fb_data->map_size);
 
 	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
@@ -6816,21 +6982,11 @@ int __devinit mxc_epdc_fb_probe(struct platform_device *pdev)
 	}
 
 	/* Allocate FB memory */
-#ifdef CONFIG_MACH_MX6SL_NTX//[
-	if(0==gptHWCFG->m_val.bUIStyle) {
-		info->screen_base = dma_alloc_writecombine(&pdev->dev,
-						  fb_data->map_size<<1,
-						  &fb_data->phys_start,
-						  GFP_DMA);
-	}
-	else 
-#endif//]CONFIG_MACH_MX6SL_NTX
-	{
-		info->screen_base = dma_alloc_writecombine(&pdev->dev,
-						  fb_data->map_size,
-						  &fb_data->phys_start,
-						  GFP_DMA);
-	}
+	
+	info->screen_base = dma_alloc_writecombine(&pdev->dev,
+			  fb_data->map_size,
+			  &fb_data->phys_start,
+			  GFP_DMA);
 
 	if (info->screen_base == NULL) {
 		ret = -ENOMEM;
@@ -6861,7 +7017,10 @@ int __devinit mxc_epdc_fb_probe(struct platform_device *pdev)
 	var_info->vmode = FB_VMODE_NONINTERLACED;
 
 	if (2 == gptHWCFG->m_val.bUIStyle) { //Android
-		if (5 == gptHWCFG->m_val.bDisplayPanel || 10 == gptHWCFG->m_val.bDisplayPanel || 12 == gptHWCFG->m_val.bDisplayPanel) { //6 top, 6.8 bottom, 13.3 left
+		if ( 5 == gptHWCFG->m_val.bDisplayPanel || 
+				 10 == gptHWCFG->m_val.bDisplayPanel || 
+				 12 == gptHWCFG->m_val.bDisplayPanel ) 
+		{ //6 top, 6.8 bottom, 13.3 left , 7.8 bottom .
 			var_info->rotate = FB_ROTATE_UD;
 		}
 	}
@@ -6921,7 +7080,13 @@ int __devinit mxc_epdc_fb_probe(struct platform_device *pdev)
 	fix_info->ywrapstep = 0;
 	fix_info->accel = FB_ACCEL_NONE;
 	fix_info->smem_start = fb_data->phys_start;
-	fix_info->smem_len = fb_data->map_size;
+
+	if(0==gptHWCFG->m_val.bUIStyle) {
+		fix_info->smem_len = fb_data->map_size>>1;
+	}
+	else {
+		fix_info->smem_len = fb_data->map_size;
+	}
 	fix_info->ypanstep = 0;
 
 	fb_data->native_width = vmode->xres;
@@ -7396,18 +7561,8 @@ out_upd_lists:
 		kfree(plist);
 	}
 out_dma_fb:
-#ifdef CONFIG_MACH_MX6SL_NTX//[
-	if(0==gptHWCFG->m_val.bUIStyle) {
-		dma_free_writecombine(&pdev->dev, fb_data->map_size<<1, info->screen_base,
-			      fb_data->phys_start);
-	}
-	else 
-#endif//]CONFIG_MACH_MX6SL_NTX
-	{
-		dma_free_writecombine(&pdev->dev, fb_data->map_size, info->screen_base,
-			      fb_data->phys_start);
-	}
-
+	dma_free_writecombine(&pdev->dev, fb_data->map_size, info->screen_base,
+	      fb_data->phys_start);
 out_mapregs:
 	iounmap(epdc_base);
 out_cmap:
@@ -7552,6 +7707,12 @@ static int mxc_epdc_fb_suspend(struct platform_device *pdev, pm_message_t state)
 #endif //] SKIP_SUSPEND
 
 #ifdef CONFIG_MACH_MX6SL_NTX//[
+	if(EPD_PMIC_EXCEPTION_STATE_REUPDATING==ntx_epdc_pmic_get_exception_state()) {
+		printk(KERN_WARNING"%s(%d) : vdrop proc in progress , suspend skipped !\n",__FILE__,__LINE__);
+		ret =-1;
+		goto out;
+	}
+
 #ifdef EPD_FL_SUSPEND //[
 	if(0!=gptHWCFG->m_val.bFrontLight) {
 		extern int FL_suspend(void);

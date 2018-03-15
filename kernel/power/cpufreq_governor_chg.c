@@ -9,7 +9,7 @@ extern void cpufreq_set_performance_governor(void);
 extern void cpufreq_set_conservative_governor_param(int up_th, int down_th);
 #endif
 
-#define GOV_CHG_DBG		1
+//#define GOV_CHG_DBG		1
 
 #define SET_CONSERVATIVE_GOVERNOR_UP_THRESHOLD 95
 #define SET_CONSERVATIVE_GOVERNOR_DOWN_THRESHOLD 50

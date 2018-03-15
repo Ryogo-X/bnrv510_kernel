@@ -26,6 +26,8 @@
 #include <linux/workqueue.h>
 #include <linux/gpio.h>
 
+#include "gpiofn.h"
+
 struct gpio_button_data {
 	struct gpio_keys_button *button;
 	struct input_dev *input;
@@ -504,9 +506,12 @@ fail2:
 
 static int gpio_keys_open(struct input_dev *input)
 {
+	int iRet;
 	struct gpio_keys_drvdata *ddata = input_get_drvdata(input);
 
-	return ddata->enable ? ddata->enable(input->dev.parent) : 0;
+	iRet = ddata->enable ? ddata->enable(input->dev.parent) : 0;
+	gpiofn_rechk();
+	return iRet;
 }
 
 static void gpio_keys_close(struct input_dev *input)
@@ -588,6 +593,8 @@ static int __devinit gpio_keys_probe(struct platform_device *pdev)
 	input_set_capability(input, EV_KEY, KEY_F1);
 
 	input_set_capability(input, EV_SW, SW_LID);
+	input_set_capability(input, EV_SW, SW_HEADPHONE_INSERT);
+	input_set_capability(input, EV_MSC,MSC_RAW);
 #endif//] CONFIG_MACH_MX6SL_NTX
 
 	error = sysfs_create_group(&pdev->dev.kobj, &gpio_keys_attr_group);
@@ -659,7 +666,9 @@ static int __devexit gpio_keys_remove(struct platform_device *pdev)
 
 
 #ifdef CONFIG_PM
+#include "../../../arch/arm/mach-mx6/ntx_hwconfig.h"
 extern int gSleep_Mode_Suspend;
+extern volatile NTX_HWCONFIG *gptHWCFG;
 static int gpio_keys_suspend(struct device *dev)
 {
 	struct platform_device *pdev = to_platform_device(dev);
@@ -673,6 +682,11 @@ static int gpio_keys_suspend(struct device *dev)
 			if (button->wakeup) {
 				int irq = gpio_to_irq(button->gpio);
 				if (gSleep_Mode_Suspend && (KEY_POWER != button->code)) {
+					if ((69==gptHWCFG->m_val.bPCB) && (KEY_HOME == button->code)) {
+                        printk("TESTTEST home key test test\n");
+						enable_irq_wake(irq);
+						continue;
+					}
 					free_irq(irq, &ddata->data[i]);
 					if (ddata->data[i].timer_debounce)
 						del_timer_sync(&ddata->data[i].timer);
@@ -702,6 +716,10 @@ static int gpio_keys_resume(struct device *dev)
 		if (button->wakeup && device_may_wakeup(&pdev->dev)) {
 			int irq = gpio_to_irq(button->gpio);
 			if (gSleep_Mode_Suspend && (KEY_POWER != button->code)) {
+				if ((69==gptHWCFG->m_val.bPCB) && (KEY_HOME == button->code)) {
+					disable_irq_wake(irq);
+					continue;
+				}
 				gpio_keys_setup_key(pdev, bdata, button);
 				continue;
 			}

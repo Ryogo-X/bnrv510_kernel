@@ -64,6 +64,7 @@ struct s1d13521_ioctl_hwc
 #define EPDC_VCOM_SET				0x4571
 #define EPDC_VCOM_SET_TO_FLASH		0x4572
 #define EPDC_VCOM_GET				0x4573
+#define EPDC_MX5_SENDUPD				0x4574
 	
 
 

@@ -113,11 +113,51 @@ static int mmc_ios_show(struct seq_file *s, void *data)
 	case MMC_TIMING_SD_HS:
 		str = "sd high-speed";
 		break;
+	case MMC_TIMING_UHS_SDR50:
+		str = "sd uhs SDR50";
+		break;
+	case MMC_TIMING_UHS_SDR104:
+		str = "sd uhs SDR104";
+		break;
+	case MMC_TIMING_UHS_DDR50:
+		str = "sd uhs DDR50";
+		break;
 	default:
 		str = "invalid";
 		break;
 	}
 	seq_printf(s, "timing spec:\t%u (%s)\n", ios->timing, str);
+	switch (ios->signal_voltage) {
+	case MMC_SIGNAL_VOLTAGE_330:
+		str = "3.30 V";
+		break;
+	case MMC_SIGNAL_VOLTAGE_180:
+		str = "1.80 V";
+		break;
+	case MMC_SIGNAL_VOLTAGE_120:
+		str = "1.20 V";
+		break;
+	default:
+		str = "invalid";
+		break;
+	}
+	seq_printf(s, "signal voltage:\t%u (%s)\n", ios->signal_voltage, str);
+
+	switch (ios->signal_voltage) {
+	case MMC_SIGNAL_VOLTAGE_330:
+		str = "3.30 V";
+		break;
+	case MMC_SIGNAL_VOLTAGE_180:
+		str = "1.80 V";
+		break;
+	case MMC_SIGNAL_VOLTAGE_120:
+		str = "1.20 V";
+		break;
+	default:
+		str = "invalid";
+		break;
+	}
+	seq_printf(s, "signal voltage:\t%u (%s)\n", ios->signal_voltage, str);
 
 	return 0;
 }

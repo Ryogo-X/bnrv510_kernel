@@ -296,4 +296,7 @@ source "drivers/net/wireless/mwifiex/Kconfig"
 #source "drivers/net/wireless/ath6kl/Kconfig"
 source "drivers/net/wireless/rtl8192ce/Kconfig"
 source "drivers/net/wireless/rtl8723as/Kconfig"
+source "drivers/net/wireless/rtl8189fs/Kconfig"
+source "drivers/net/wireless/rtl8821cs/Kconfig"
+source "drivers/net/wireless/rtl8822bs/Kconfig"
 endif # WLAN

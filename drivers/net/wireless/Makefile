@@ -64,3 +64,6 @@ obj-$(CONFIG_BCM4329)	+= bcm4329/
 obj-$(CONFIG_BCMDHD)	+= bcmdhd/
 obj-$(CONFIG_RTL8192CE) += rtl8192ce/
 obj-$(CONFIG_RTL8723AS) += rtl8723as/
+obj-$(CONFIG_RTL8189FS)	+= rtl8189fs/
+obj-$(CONFIG_RTL8821CS)	+= rtl8821cs/
+obj-$(CONFIG_RTL8822BS)	+= rtl8822bs/

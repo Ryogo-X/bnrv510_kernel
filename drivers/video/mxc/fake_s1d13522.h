@@ -6,6 +6,8 @@
 
 
 //#define OUTPUT_SNAPSHOT_IMGFILE	16
+//
+
 
 
 typedef enum {
@@ -59,7 +61,7 @@ int fake_s1d13522_write_file_ex2(char *filename, char *data,unsigned long dwData
 
 int fb_capture_ex(EPDFB_DC *pDC,int iSrcImgX,int iSrcImgY,int iSrcImgW,int iSrcImgH,
 		int iBitsTo,EPDFB_ROTATE_T I_tRotateDegree,char *pszFileName,
-		unsigned long I_dwCapTotal);
+		unsigned long I_dwCapTotal,int iUpdMode,int iIsFullUpd);
 
 void fb_capture(EPDFB_DC *pDC,int iBitsTo,EPDFB_ROTATE_T I_tRotateDegree,char *pszFileName);
 

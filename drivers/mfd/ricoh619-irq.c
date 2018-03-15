@@ -135,6 +135,7 @@ static const struct ricoh61x_irq_data ricoh61x_irqs[RICOH61x_NR_IRQS] = {
 	[RICOH61x_IRQ_POWER_OFF]	= RICOH61x_IRQ(SYS_INT,  0, 4, 4, 0),
 	[RICOH61x_IRQ_NOE_OFF]		= RICOH61x_IRQ(SYS_INT,  0, 5, 5, 0),
 	[RICOH61x_IRQ_WD]		= RICOH61x_IRQ(SYS_INT,  0, 6, 6, 0),
+	[RICOH61x_IRQ_CLK_STP]		= RICOH61x_IRQ(SYS_INT,  0, 7, 7, 0),
 
 	[RICOH61x_IRQ_DC1LIM]		= RICOH61x_IRQ(DCDC_INT, 1, 0, 0, 1),
 	[RICOH61x_IRQ_DC2LIM]		= RICOH61x_IRQ(DCDC_INT, 1, 1, 1, 1),
@@ -400,6 +401,11 @@ static irqreturn_t ricoh61x_irq(int irq, void *data)
 //				printk(KERN_INFO "PMU2: Watchdog timeout triggered. ===============\n", __func__);
 //				return IRQ_HANDLED;
 			}
+			if ((irq_clr_add[i] == RICOH61x_INT_IR_SYS) && (int_sts[i] & 0x80)) {
+				isIrqHandled = 1;
+				printk(KERN_INFO "PMU2: CLKSTP triggered. ===============\n", __func__);
+//				return IRQ_HANDLED;
+			}
 			ret = ricoh61x_write(ricoh61x->dev,
 				irq_clr_add[i], ~int_sts[i]);
 			if (ret < 0) {
@@ -525,6 +531,12 @@ int ricoh61x_irq_init(struct ricoh61x *ricoh61x, int irq,
 		ricoh61x->gpedge_reg[i] = 0;
 	}
 
+#if 1
+	// enable system int for CLKSTOP.
+	ricoh61x->intc_inten_reg = 0x01;
+	// enable CLKSTOP interrupt.
+	ricoh61x->irq_en_reg[0] = 0x80;
+#endif
 	/* Initailize all int register to 0 */
 	for (i = 0; i < MAX_INTERRUPT_MASKS; i++)  {
 		ret = ricoh61x_write(ricoh61x->dev,

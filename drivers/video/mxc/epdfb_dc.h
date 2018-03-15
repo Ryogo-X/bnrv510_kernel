@@ -12,6 +12,37 @@
 #define __epdfb_dc_h
 
 
+struct mxcfb_mx5_rect {
+	unsigned long top;
+	unsigned long left;
+	unsigned long width;
+	unsigned long height;
+};
+
+struct mxcfb_mx5_alt_buffer_data {
+#if defined(CONFIG_ANDROID) || defined (ANDROID)//[
+#else//][!CONFIG_ANDROID
+	void *virt_addr;
+#endif//]!CONFIG_ANDROID
+	unsigned long phys_addr;
+	unsigned long width;	/* width of entire buffer */
+	unsigned long height;	/* height of entire buffer */
+	struct mxcfb_mx5_rect alt_update_region;	/* region within buffer to update */
+};
+
+struct mxcfb_mx5_update_data {
+	struct mxcfb_mx5_rect update_region;
+	unsigned long waveform_mode;
+	unsigned long update_mode;
+	unsigned long update_marker;
+	int temp;
+	unsigned int flags;
+	struct mxcfb_mx5_alt_buffer_data alt_buffer_data;
+};
+
+
+
+
 typedef enum {
 	EPDFB_DC_SUCCESS = 0,
 	EPDFB_DC_PARAMERR = -1,
@@ -53,6 +84,7 @@ typedef int (*fnPutImg)(EPDFB_IMG *I_ptPutImage,EPDFB_ROTATE_T I_tRotate);
 typedef int (*fnSetVCOM)(int iVCOM_set_mV);
 typedef int (*fnSetVCOMToFlash)(int iVCOM_set_mV);
 typedef int (*fnGetVCOM)(int *O_piVCOM_get_mV);
+typedef int (*fnSendEPDUpd)(struct mxcfb_mx5_update_data *ptUPD_DATA);
 
 
 // epd framebuffer device content ...
@@ -86,6 +118,7 @@ typedef struct tagEPDFB_DC {
 	fnSetVCOM pfnSetVCOM;
 	fnSetVCOMToFlash pfnSetVCOMToFlash;
 	fnGetVCOM pfnGetVCOM;
+	fnSendEPDUpd pfnSendEPDUpd;
 	
 	// private : do not modify these member var .
 	//  only for epdfbdc manager .
@@ -155,6 +188,10 @@ EPDFB_DC_RET epdfbdc_get_dirty_region(EPDFB_DC *I_pEPD_dc,\
 	
 EPDFB_DC_RET epdfbdc_set_pixel(EPDFB_DC *I_pEPD_dc,\
 	unsigned long I_dwX,unsigned long I_dwY,unsigned long I_dwPVal);
+EPDFB_DC_RET epdfbdc_draw_line(EPDFB_DC *I_pEPD_dc,\
+	unsigned long I_dwX1,unsigned long I_dwY1,\
+	unsigned long I_dwX2,unsigned long I_dwY2,\
+	unsigned char I_bLineColor,unsigned short I_wLineWidth);
 
 EPDFB_DC_RET epdfbdc_dcbuf_to_RGB565(EPDFB_DC *I_pEPD_dc,\
 	unsigned char *O_pbRGB565Buf,unsigned long I_dwRGB565BufSize);

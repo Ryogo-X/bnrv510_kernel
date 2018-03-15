@@ -83,11 +83,13 @@ static void usb_charger_work(struct work_struct *data)
 			dcd_result = ricoh619_charger_detect ();
 //			printk ("[%s-%d] DCD result 0x%X \n", __func__, __LINE__, dcd_result);
 		}
-		if (SDP_CHARGER != dcd_result)
+		if (SDP_PC_CHARGER != dcd_result)
 			msleep (500);
+		
+//		if ((SDP_PC_CHARGER == dcd_result) && (charger->dp_pullup))
+		if (charger->dp_pullup)
+			charger->dp_pullup(true);
 	}
-	if (charger->dp_pullup)
-		charger->dp_pullup(true);
 #else
 	/* Start the primary charger detection. */
 	if (charger->detect) {

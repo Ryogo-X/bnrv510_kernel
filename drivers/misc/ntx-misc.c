@@ -62,18 +62,21 @@ static volatile int giIsSuspending=0;
 static struct rtc_time gtLastRTCtm;
 static struct regulator *g_fl_regulator;
 
-void fl_pwr_enable (int isEnable)
+void fl_regulator_enable (int isEnable)
 {
 	static int s_is_enabled;
 	if (g_fl_regulator && (s_is_enabled != isEnable)) {
 		s_is_enabled = isEnable;
-		printk ("[%s-%d] regulator %s\n",__func__,__LINE__,(isEnable)?"on":"off");
-		if (isEnable) {
-  			regulator_enable (g_fl_regulator);
+		printk ("[%s-%d] regulator %d\n",__func__,__LINE__,isEnable);
+		if (1==isEnable||2==isEnable) {
+  		regulator_enable (g_fl_regulator);
+			if(1==isEnable) {
   			msleep (200);
-  		}
-		else
-  			regulator_disable (g_fl_regulator);
+			}
+  	}
+		else if(0==isEnable) {
+  		regulator_disable (g_fl_regulator);
+		}
 	}
 }
 static DEFINE_SEMAPHORE(msp430_cmd_lockobj);
@@ -402,6 +405,32 @@ unsigned short msp430_deviceid(void)
 
 void msp430_auto_power(int minutes)
 {
+	unsigned int hour ;
+	unsigned int min ;
+	int iChk;
+
+	iChk = up_cmd_lock(__LINE__);
+	if(iChk<0) {
+		printk("[warning] %s(%d) skipped errorno(%d) \n",__FUNCTION__,__LINE__,iChk);
+	return;
+	}
+
+	hour = up_read_reg(0x21)&0xFF;
+	min = up_read_reg(0x23)>>8;
+	hour += minutes/60;
+	min += minutes%60;
+
+	if (60 <= min) {
+		min %= 60;
+		hour++;
+	}
+
+	hour %= 24;
+	up_write_reg(0x16, hour<<8);
+	up_write_reg(0x17, min<<8);
+	up_write_reg(0x18, 0x0100);
+	up_write_reg(0x1E, 0x5A00);
+	up_cmd_unlock();
 }
 
 void msp430_powerkeep(int n)
@@ -430,14 +459,233 @@ void msp430_pm_restart(void)
 	}
 }
 
-int msp430_fl_enable(int iIsEnable)
+#define UNKNOW_FL_ENABLE_STATE 0x0000
+static unsigned short gwMSP430_fl_enable_state=UNKNOW_FL_ENABLE_STATE;
+static volatile int giMSP430_FL_W_idx=0; // FL white control index .
+static volatile unsigned char gbMSP430_RegFLW_dutyL=0xA6,gbMSP430_RegFLW_dutyH=0xA7;
+static volatile int giFLW_duty=-1,giFLW_dutyMin=1,giFLW_dutyMax=400;
+static volatile int giFLR_duty=-1,giFLR_dutyMin=1,giFLR_dutyMax=400;
+static volatile int giFLW_freq=-1,giFLW_freqMin=1,giFLW_freqMax=8000000;
+int msp430_fl_enable(int iColorIDX,int iIsEnable)
 {
 	int iRet = 0;
-	if(iIsEnable) {
-		up_safe_write_reg (0xA3, 0x0100);	// enable front light pwm .
+	unsigned short wSetState = 0;
+	int i;
+
+	printk("%s(%d,%d)\n",__FUNCTION__,iColorIDX,iIsEnable);
+
+	wSetState = gwMSP430_fl_enable_state;
+	if((MSP430_FL_IDX_ALL==iColorIDX)||(MSP430_FL_IDX_W==iColorIDX)) {
+		if(iIsEnable) {
+			wSetState |= (0x0100<<giMSP430_FL_W_idx);
+		}
+		else {
+			wSetState &= ~(0x0100<<giMSP430_FL_W_idx);
+		}
 	}
-	else {
-		up_safe_write_reg(0xA3, 0); // disable front light pwm .
+	if(4==gptHWCFG->m_val.bFL_PWM) {
+		if((MSP430_FL_IDX_ALL==iColorIDX)||(MSP430_FL_IDX_R==iColorIDX)) {
+			if(iIsEnable) {
+				wSetState |= (0x0100<<0);
+			}
+			else {
+				wSetState &= ~(0x0100<<0);
+			}
+		}
+	}
+	if( wSetState != gwMSP430_fl_enable_state ) {
+		printk("msp430 fl enable 0x%04x\n",wSetState);
+		up_safe_write_reg (0xA3, wSetState);
+		gwMSP430_fl_enable_state = wSetState;
+	}
+	return iRet;
+}
+int msp430_fl_is_enable(int iColorIDX)
+{
+	int iRet=-1;
+	unsigned short wCompState ;
+	if(MSP430_FL_IDX_W==iColorIDX) {
+		wCompState = (0x0100<<giMSP430_FL_W_idx);
+		iRet = (gwMSP430_fl_enable_state&wCompState) ? 1 : 0;
+	}
+	else if(MSP430_FL_IDX_R==iColorIDX) {
+		if(4==gptHWCFG->m_val.bFL_PWM) {
+			wCompState = (0x0100<<0);
+			iRet = (gwMSP430_fl_enable_state&wCompState) ? 1 : 0;
+		}
+	}
+	return iRet;
+}
+
+
+
+int msp430_fl_set_duty(int iColorIDX,int iDuty)
+{
+	int iChk;
+	int iRet=-1;
+
+	iChk = up_cmd_lock(__LINE__);
+	if(iChk<0) {
+		printk("[warning] %s(%d) skipped errorno(%d) \n",__FUNCTION__,__LINE__,iChk);
+		return -2;
+	}
+
+	do {
+		if((MSP430_FL_IDX_ALL==iColorIDX)||(MSP430_FL_IDX_W==iColorIDX)) {
+			if(iDuty<giFLW_dutyMin) {
+				iRet = -3;
+				break;
+			}
+			if(iDuty>giFLW_dutyMax) {
+				iRet = -4;
+				break;
+			}
+			iChk = up_write_reg (gbMSP430_RegFLW_dutyH, iDuty&0xFF00);
+			iChk = up_write_reg (gbMSP430_RegFLW_dutyL, iDuty<<8);
+			giFLW_duty = iDuty;
+			iRet = 0;
+		}
+
+		if(4==gptHWCFG->m_val.bFL_PWM) {
+			if((MSP430_FL_IDX_ALL==iColorIDX)||(MSP430_FL_IDX_R==iColorIDX)) {
+				if(iDuty<giFLR_dutyMin) {
+					iRet = -5;
+					break;
+				}
+				if(iDuty>giFLR_dutyMax) {
+					iRet = -6;
+					break;
+				}
+				iChk = up_write_reg (0xA7, iDuty&0xFF00);
+				iChk = up_write_reg (0xA6, iDuty<<8);
+				giFLR_duty = iDuty;
+				iRet = 0;
+			}
+		}
+	}while(0);
+
+	up_cmd_unlock();
+
+	return iRet;
+}
+
+int msp430_fl_get_duty(int iColorIDX)
+{
+	int iRet=-1;
+	if(MSP430_FL_IDX_W==iColorIDX) {
+		iRet = giFLW_duty;
+	}
+	else if(MSP430_FL_IDX_R==iColorIDX) {
+		iRet = giFLR_duty;
+	}
+	return iRet;
+}
+int msp430_fl_get_duty_max(int iColorIDX)
+{
+	int iRet=-1;
+	if(MSP430_FL_IDX_W==iColorIDX) {
+		iRet = giFLW_dutyMax;
+	}
+	else if(MSP430_FL_IDX_R==iColorIDX) {
+		iRet = giFLR_dutyMax;
+	}
+	return iRet;
+}
+int msp430_fl_get_duty_min(int iColorIDX)
+{
+	int iRet=-1;
+	if(MSP430_FL_IDX_W==iColorIDX) {
+		iRet = giFLW_dutyMin;
+	}
+	else if(MSP430_FL_IDX_R==iColorIDX) {
+		iRet = giFLR_dutyMin;
+	}
+	return iRet;
+}
+
+
+int msp430_fl_set_freq(int iColorIDX,int iFreq)
+{
+	int iChk;
+	int iRet=-1;
+
+	unsigned char bFreqRegHi=0xA5;
+	unsigned char bFreqRegLo=0xA4;
+
+	iChk = up_cmd_lock(__LINE__);
+	if(iChk<0) {
+		printk("[warning] %s(%d) skipped errorno(%d) \n",__FUNCTION__,__LINE__,iChk);
+		return -2;
+	}
+
+	do {
+		if((MSP430_FL_IDX_ALL==iColorIDX)||(MSP430_FL_IDX_W==iColorIDX)) {
+			if(iFreq<giFLW_freqMin) {
+				iRet = -3;
+				break;
+			}
+			if(iFreq>giFLW_freqMax) {
+				iRet = -4;
+				break;
+			}
+			iChk = up_write_reg (bFreqRegHi, iFreq&0xFF00);
+			iChk = up_write_reg (bFreqRegLo, iFreq<<8);
+			giFLW_freq = iFreq;
+			iRet = 0;
+		}
+
+		if(4==gptHWCFG->m_val.bFL_PWM) {
+			if((MSP430_FL_IDX_ALL==iColorIDX)||(MSP430_FL_IDX_R==iColorIDX)) {
+				if(iFreq<giFLW_freqMin) {
+					iRet = -5;
+					break;
+				}
+				if(iFreq>giFLW_freqMax) {
+					iRet = -6;
+					break;
+				}
+				iChk = up_write_reg (bFreqRegHi, iFreq&0xFF00);
+				iChk = up_write_reg (bFreqRegLo, iFreq<<8);
+				giFLW_freq = iFreq;
+				iRet = 0;
+			}
+		}
+	}while(0);
+
+	up_cmd_unlock();
+
+	return iRet;
+}
+int msp430_fl_get_freq(int iColorIDX)
+{
+	int iRet=-1;
+	if(MSP430_FL_IDX_W==iColorIDX) {
+		iRet = giFLW_freq;
+	}
+	else if(MSP430_FL_IDX_R==iColorIDX) {
+		iRet = giFLW_freq;
+	}
+	return iRet;
+}
+int msp430_fl_get_freq_max(int iColorIDX)
+{
+	int iRet=-1;
+	if(MSP430_FL_IDX_W==iColorIDX) {
+		iRet = giFLW_freqMax;
+	}
+	else if(MSP430_FL_IDX_R==iColorIDX) {
+		iRet = giFLW_freqMax;
+	}
+	return iRet;
+}
+int msp430_fl_get_freq_min(int iColorIDX)
+{
+	int iRet=-1;
+	if(MSP430_FL_IDX_W==iColorIDX) {
+		iRet = giFLW_freqMin;
+	}
+	else if(MSP430_FL_IDX_R==iColorIDX) {
+		iRet = giFLW_freqMin;
 	}
 	return iRet;
 }
@@ -686,31 +934,60 @@ int msp430_battery(void)
 static int ntx_up_battery_vol (void)
 {
 	int i, battValue, result=0;
-	const unsigned short battGasgauge[] = {
-	//	3.0V, 3.1V, 3.2V, 3.3V, 3.4V, 3.5V, 3.6V, 3.7V, 3.8V, 3.9V, 4.0V, 4.1V, 4.2V,
-//		 743,  767,  791,  812,  835,  860,  885,  909,  935,  960,  985, 1010, 1023,
-		 767,  791,  812,  833,  852,  877,  903,  928,  950,  979,  993, 1019, 1023,
-	};
 
 #ifdef CONFIG_MACH_MX6Q_NTX//[
 	if (!ntx_misc->acin_gpio)
 		return 4200000;
 #endif //]CONFIG_MACH_MX6Q_NTX
 		
-	if (NTX_ACIN_PG && !(NTX_IS_CHARGING))
-		return 4200000;
+	if (NTX_ACIN_PG && !(NTX_IS_CHARGING)) {
+		if (13==gptHWCFG->m_val.bBattery)
+			return 8400000;
+		else
+			return 4200000;
+	}
 	
 	battValue = msp430_battery ();
-	// transfer to uV to pmic interface.
-	for (i=0; i< sizeof (battGasgauge); i++) {                 
-		if (battValue <= battGasgauge[i]) {
-			if (i && (battValue != battGasgauge[i])) {
-				result = 3000000+ (i-1)*100000;
-				result += ((battValue-battGasgauge[i-1]) * 100000 / (battGasgauge[i]-battGasgauge[i-1]));
+
+	if (13==gptHWCFG->m_val.bBattery) {
+		const unsigned short battGasgauge[] = {
+		//	6.0V, 6.1V, 6.2V, 6.3V, 6.4V, 6.5V, 6.6V, 6.7V, 6.8V, 6.9V, 7.0V, 7.1V, 7.2V,
+			 743,  754,  767,  779,  791,  805,  814,  837,  840,  851,  865,  881,  888,
+		//	7.3V, 7.4V, 7.5V, 7.6V, 7.7V, 7.8V, 7.9V, 8.0V, 8.1V, 8.2V, 8.3V, 8.4V
+			 901,  913,  924,  936,  948,  959,  971,  985,  998, 1010, 1021, 1023,
+		};
+	
+		// transfer to uV to pmic interface.
+		for (i=0; i< sizeof (battGasgauge); i++) {                 
+			if (battValue <= battGasgauge[i]) {
+				if (i && (battValue != battGasgauge[i])) {
+					result = 6000000+ (i-1)*100000;
+					result += ((battValue-battGasgauge[i-1]) * 100000 / (battGasgauge[i]-battGasgauge[i-1]));
+				}
+				else
+					result = 6000000+ i*100000;
+				break;
 			}
-			else
-				result = 3000000+ i*100000;
-			break;
+		}
+	}
+	else {
+		const unsigned short battGasgauge[] = {
+		//	3.0V, 3.1V, 3.2V, 3.3V, 3.4V, 3.5V, 3.6V, 3.7V, 3.8V, 3.9V, 4.0V, 4.1V, 4.2V,
+	//		 743,  767,  791,  812,  835,  860,  885,  909,  935,  960,  985, 1010, 1023,
+			 767,  791,  812,  833,  852,  877,  903,  928,  950,  979,  993, 1019, 1023,
+		};
+	
+		// transfer to uV to pmic interface.
+		for (i=0; i< sizeof (battGasgauge); i++) {                 
+			if (battValue <= battGasgauge[i]) {
+				if (i && (battValue != battGasgauge[i])) {
+					result = 3000000+ (i-1)*100000;
+					result += ((battValue-battGasgauge[i-1]) * 100000 / (battGasgauge[i]-battGasgauge[i-1]));
+				}
+				else
+					result = 3000000+ i*100000;
+				break;
+			}
 		}
 	}
 	return result;
@@ -836,15 +1113,28 @@ static int ntx_up_battery_get_property(struct power_supply *psy,
 			return 0;
 		}
 		value = ntx_up_battery_vol();
-		if (4100000 <= value) {
-			val->intval =  100;
+		if (13==gptHWCFG->m_val.bBattery) {
+			if (8200000 <= value) {
+				val->intval =  100;
+			}
+			else if (6800000 > value) {
+				printk("%s : empty !! %d\n",__FUNCTION__,value);
+				val->intval = 0;
+			}
+			else
+				val->intval  = 100 - ((8200000 - value)/14000);
 		}
-		else if (3400000 > value) {
-			printk("%s : empty !! %d\n",__FUNCTION__,value);
-			val->intval = 0;
+		else {
+			if (4100000 <= value) {
+				val->intval =  100;
+			}
+			else if (3400000 > value) {
+				printk("%s : empty !! %d\n",__FUNCTION__,value);
+				val->intval = 0;
+			}
+			else
+				val->intval  = 100 - ((4100000 - value)/7000);
 		}
-		else
-			val->intval  = 100 - ((4100000 - value)/7000);
 		return 0;
 
 	case POWER_SUPPLY_PROP_VOLTAGE_NOW:
@@ -893,15 +1183,21 @@ static void acin_pg_chk( void )
 	extern int mxc_usb_plug_getstatus (void);
 
 
-	if((36==gptHWCFG->m_val.bPCB||40==gptHWCFG->m_val.bPCB||50==gptHWCFG->m_val.bPCB) && 
+	if(9!=gptHWCFG->m_val.bCustomer) {
+		if( (36==gptHWCFG->m_val.bPCB||
+			 40==gptHWCFG->m_val.bPCB||
+			 50==gptHWCFG->m_val.bPCB||
+			 58==gptHWCFG->m_val.bPCB||
+			((gptHWCFG->m_val.bPCB>=61)&&(gMX6SL_CHG_LED==gMX6SL_ON_LED)) ) && 
 			0x03!=gptHWCFG->m_val.bUIConfig) 
-	{
-		// E60Q32/E60Q5X control charging led if not MP/RD mode . 
-		if(mxc_usb_plug_getstatus()) {
-			led_red(1);
-		}
-		else {
-			led_red(0);
+		{
+			// E60Q32/E60Q5X control charging led if not MP/RD mode . 
+			if(mxc_usb_plug_getstatus()) {
+				led_red(1);
+			}
+			else {
+				led_red(0);
+			}
 		}
 	}	
 #endif //]CONFIG_MACH_MXSL_NTX
@@ -1617,10 +1913,13 @@ static void msp430_create_sys_attrs(void)
 }
 #endif//] CONFIG_MACH_MX6SL_NTX
 
+#define MSP430_PWR_SW	IMX_GPIO_NR(5, 10)
 static __devinit int msp430_i2c_probe(struct i2c_client *client,
 					const struct i2c_device_id *id)
 {
 	int err = 0;
+	unsigned short wDevID;
+	int iDevIDRD_retry=0;
 
 	if(!i2c_check_functionality(client->adapter, I2C_FUNC_I2C))
 	{
@@ -1630,6 +1929,22 @@ static __devinit int msp430_i2c_probe(struct i2c_client *client,
 	gdwLastRTCReadTick = jiffies;
 	g_up_i2c_client = client;
 	printk ("[%s-%d] firmware version %X\n",__func__,__LINE__,msp430_deviceid());
+
+	if (13==gptHWCFG->m_val.bBattery)	// wait msp430 power on.
+		iDevIDRD_retry = 10;
+
+	do {
+		wDevID = msp430_deviceid();
+		printk ("[%s-%d] firmware version %X\n",__func__,__LINE__,wDevID);
+		if (0==wDevID && 13==gptHWCFG->m_val.bBattery) {
+			gpio_direction_output (MSP430_PWR_SW, 0);
+			msleep (1000);
+			gpio_direction_output (MSP430_PWR_SW, 1);
+		}
+	}while(0==wDevID && --iDevIDRD_retry>0);
+
+	if (13==gptHWCFG->m_val.bBattery) 
+		gpio_direction_output (MSP430_PWR_SW, 1);
 
 	if( 1==gptHWCFG->m_val.bPMIC && 0!=gptHWCFG->m_val.bFrontLight) {
 		// FL_3V3 for Ricoh PMIC & FL is ON .
@@ -1667,6 +1982,27 @@ static __devinit int msp430_i2c_probe(struct i2c_client *client,
 		msp430_homeled_type_set(MSP430_HOMELED_TYPE_NORMAL);
 		//msp430_homeled_enable(1);
 		msp430_set_homeled_delayms(ntx_get_homeled_delay_ms());
+	}
+	if(4==gptHWCFG->m_val.bFL_PWM) {
+		gbMSP430_RegFLW_dutyL = 0xA8;
+		gbMSP430_RegFLW_dutyH = 0xA9;
+		giMSP430_FL_W_idx=1;
+	}
+	if( 0 == NTXHWCFG_TST_FLAG(gptHWCFG->m_val.bFrontLight_Flags,0)) {
+		// FL not boot on .
+		if(0==gptHWCFG->m_val.bFL_PWM || 4==gptHWCFG->m_val.bFL_PWM) {
+			// FL is controlled by MSP430 .
+			gwMSP430_fl_enable_state = 0;
+			msp430_fl_enable (MSP430_FL_IDX_ALL,0);
+		}
+	}
+	else {
+		if(4==gptHWCFG->m_val.bFL_PWM) {
+			gwMSP430_fl_enable_state = 0x0200;
+		}
+		else {
+			gwMSP430_fl_enable_state = 0x0100;
+		}
 	}
 
 	msp430_create_sys_attrs();

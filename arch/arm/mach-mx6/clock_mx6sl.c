@@ -2418,7 +2418,7 @@ static int _clk_extern_audio_set_rate(struct clk *clk, unsigned long rate)
 		if (((parent_rate / div) != rate) || div > 64)
 			return -EINVAL;
 
-		audio_pll_bypass = 0;
+		audio_pll_bypass = 1;
 
 		__calc_pre_post_dividers(1 << 3, div, &pre, &post);
 	}

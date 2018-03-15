@@ -25,7 +25,7 @@
 #include <sound/initval.h>
 #include <sound/tlv.h>
 
-#define RTK_IOCTL
+//#define RTK_IOCTL
 #ifdef RTK_IOCTL
 #if defined(CONFIG_SND_HWDEP) || defined(CONFIG_SND_HWDEP_MODULE)
 #include "rt56xx_ioctl.h"
@@ -92,10 +92,10 @@ static struct rt5640_init_reg init_list[] = {
 //	{RT5640_HP_CALIB_AMP_DET, 0x0420},
 	{RT5640_SPK_L_MIXER	, 0x0036},//DACL1 -> SPKMIXL
 	{RT5640_SPK_R_MIXER	, 0x0036},//DACR1 -> SPKMIXR
-	{RT5640_SPK_VOL		, 0x8b8b},//SPKMIX -> SPKVOL
+	{RT5640_SPK_VOL		, 0xcbcb},//SPKMIX -> SPKVOL
 	{RT5640_SPO_CLSD_RATIO	, 0x0001},
-	{RT5640_SPO_L_MIXER	, 0xe800},//SPKVOLL -> SPOLMIX
-	{RT5640_SPO_R_MIXER	, 0x2800},//SPKVOLR -> SPORMIX
+	{RT5640_SPO_L_MIXER	, 0xf800},//SPKVOLL -> SPOLMIX
+	{RT5640_SPO_R_MIXER	, 0x3800},//SPKVOLR -> SPORMIX
 //	{RT5640_SPO_L_MIXER	, 0xb800},//DAC -> SPOLMIX
 //	{RT5640_SPO_R_MIXER	, 0x1800},//DAC -> SPORMIX  
 //	{RT5640_I2S1_SDP	, 0xD000},//change IIS1 and IIS2
@@ -921,18 +921,21 @@ static int rt5640_vol_rescale_put(struct snd_kcontrol *kcontrol,
 
 
 static const struct snd_kcontrol_new rt5640_snd_controls[] = {
+#if 0
 	/* Speaker Output Volume */
 	SOC_DOUBLE("Speaker Playback Switch", RT5640_SPK_VOL,
 		RT5640_L_MUTE_SFT, RT5640_R_MUTE_SFT, 1, 1),
 	SOC_DOUBLE_EXT_TLV("Speaker Playback Volume", RT5640_SPK_VOL,
 		RT5640_L_VOL_SFT, RT5640_R_VOL_SFT, RT5640_VOL_RSCL_RANGE, 0,
 		rt5640_vol_rescale_get, rt5640_vol_rescale_put, out_vol_tlv),
+#endif
 	/* Headphone Output Volume */
 	SOC_DOUBLE("HP Playback Switch", RT5640_HP_VOL,
 		RT5640_L_MUTE_SFT, RT5640_R_MUTE_SFT, 1, 1),
 	SOC_DOUBLE_EXT_TLV("HP Playback Volume", RT5640_HP_VOL,
 		RT5640_L_VOL_SFT, RT5640_R_VOL_SFT, RT5640_VOL_RSCL_RANGE, 0,
 		rt5640_vol_rescale_get, rt5640_vol_rescale_put, out_vol_tlv),
+#if 0
 	/* OUTPUT Control */
 	SOC_DOUBLE("OUT Playback Switch", RT5640_OUTPUT,
 		RT5640_L_MUTE_SFT, RT5640_R_MUTE_SFT, 1, 1),
@@ -940,6 +943,7 @@ static const struct snd_kcontrol_new rt5640_snd_controls[] = {
 		RT5640_VOL_L_SFT, RT5640_VOL_R_SFT, 1, 1),
 	SOC_DOUBLE_TLV("OUT Playback Volume", RT5640_OUTPUT,
 		RT5640_L_VOL_SFT, RT5640_R_VOL_SFT, 39, 1, out_vol_tlv),
+#endif
 	/* MONO Output Control */
 	SOC_SINGLE("Mono Playback Switch", RT5640_MONO_OUT,
 				RT5640_L_MUTE_SFT, 1, 1),
@@ -2921,6 +2925,15 @@ static int rt5640_set_dai_sysclk(struct snd_soc_dai *dai,
 	return 0;
 }
 
+static int rt5640_mute(struct snd_soc_dai *dai, int mute)
+{
+	struct snd_soc_codec *codec = dai->codec;
+	if (mute)
+		rt5640_pmd_depop (codec);
+	else
+		rt5640_pmu_depop (codec);
+}
+
 /**
  * rt5640_pll_calc - Calcualte PLL M/N/K code.
  * @freq_in: external clock provided to codec.
@@ -3475,6 +3488,7 @@ struct snd_soc_dai_ops rt5640_aif_dai_ops = {
 	.set_fmt = rt5640_set_dai_fmt,
 	.set_sysclk = rt5640_set_dai_sysclk,
 	.set_pll = rt5640_set_dai_pll,
+	.digital_mute = rt5640_mute,
 };
 
 struct snd_soc_dai_driver rt5640_dai[] = {

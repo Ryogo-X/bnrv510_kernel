@@ -243,6 +243,7 @@ static void pxp_set_ctrl(struct pxps *pxp)
 
 	/* Configure S0 input format */
 	switch (pxp_conf->s0_param.pixel_fmt) {
+	case PXP_PIX_FMT_RGB32:
 	case PXP_PIX_FMT_RGB24:
 		fmt_ctrl = BV_PXP_PS_CTRL_FORMAT__RGB888;
 		break;
@@ -276,8 +277,11 @@ static void pxp_set_ctrl(struct pxps *pxp)
 
 	/* Configure output format based on out_channel format */
 	switch (pxp_conf->out_param.pixel_fmt) {
-	case PXP_PIX_FMT_RGB24:
+	case PXP_PIX_FMT_RGB32:
 		fmt_ctrl = BV_PXP_OUT_CTRL_FORMAT__RGB888;
+		break;
+	case PXP_PIX_FMT_RGB24:
+		fmt_ctrl = BV_PXP_OUT_CTRL_FORMAT__RGB888P;
 		break;
 	case PXP_PIX_FMT_RGB565:
 		fmt_ctrl = BV_PXP_OUT_CTRL_FORMAT__RGB565;
@@ -342,7 +346,7 @@ static void pxp_set_outbuf(struct pxps *pxp)
 		     BF_PXP_OUT_LRC_Y(out_params->height - 1),
 		     pxp->base + HW_PXP_OUT_LRC);
 
-	if (out_params->pixel_fmt == PXP_PIX_FMT_RGB24)
+	if (out_params->pixel_fmt == PXP_PIX_FMT_RGB24 || out_params->pixel_fmt == PXP_PIX_FMT_RGB32)
 		__raw_writel(out_params->stride << 2,
 				pxp->base + HW_PXP_OUT_PITCH);
 	else if (out_params->pixel_fmt == PXP_PIX_FMT_RGB565)
@@ -401,7 +405,7 @@ static void pxp_set_oln(int layer_no, struct pxps *pxp)
 		     BF_PXP_OUT_AS_LRC_Y(olparams_data->height),
 		     pxp->base + HW_PXP_OUT_AS_LRC);
 
-	if (olparams_data->pixel_fmt == PXP_PIX_FMT_RGB24)
+	if (olparams_data->pixel_fmt == PXP_PIX_FMT_RGB24 || olparams_data->pixel_fmt == PXP_PIX_FMT_RGB32)
 		__raw_writel(olparams_data->width << 2,
 				pxp->base + HW_PXP_AS_PITCH);
 	else
@@ -416,7 +420,7 @@ static void pxp_set_olparam(int layer_no, struct pxps *pxp)
 	u32 olparam;
 
 	olparam = BF_PXP_AS_CTRL_ALPHA(olparams_data->global_alpha);
-	if (olparams_data->pixel_fmt == PXP_PIX_FMT_RGB24)
+	if (olparams_data->pixel_fmt == PXP_PIX_FMT_RGB24 || olparams_data->pixel_fmt == PXP_PIX_FMT_RGB32)
 		olparam |=
 		    BF_PXP_AS_CTRL_FORMAT(BV_PXP_AS_CTRL_FORMAT__RGB888);
 	else
@@ -753,7 +757,7 @@ static void pxp_set_s0buf(struct pxps *pxp)
 
 	if (s0_params->pixel_fmt == PXP_PIX_FMT_RGB565)
 		bpp = 2;
-	else if (s0_params->pixel_fmt == PXP_PIX_FMT_RGB24)
+	else if (s0_params->pixel_fmt == PXP_PIX_FMT_RGB24||s0_params->pixel_fmt == PXP_PIX_FMT_RGB32)
 		bpp = 4;
 	offset = (proc_data->srect.top * s0_params->width +
 		 proc_data->srect.left) * bpp;
@@ -782,6 +786,8 @@ static void pxp_set_s0buf(struct pxps *pxp)
 		__raw_writel(s0_params->width, pxp->base + HW_PXP_PS_PITCH);
 	else if (s0_params->pixel_fmt == PXP_PIX_FMT_GY04)
 		__raw_writel(s0_params->width >> 1, pxp->base + HW_PXP_PS_PITCH);
+	else if (s0_params->pixel_fmt == PXP_PIX_FMT_RGB32)
+		__raw_writel(s0_params->width << 2, pxp->base + HW_PXP_PS_PITCH);
 	else
 		__raw_writel(s0_params->width * 2, pxp->base + HW_PXP_PS_PITCH);
 }

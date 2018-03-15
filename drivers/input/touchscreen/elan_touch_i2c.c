@@ -22,21 +22,24 @@
 
 #include "../../../arch/arm/mach-mx6/ntx_hwconfig.h"
 extern volatile NTX_HWCONFIG *gptHWCFG;
+extern volatile unsigned gMX6SL_IR_TOUCH_RST;
 
 //#define _NEW_FIRMWARE_
 
 //#ifdef _NEW_FIRMWARE_
 static unsigned int xResolution;
 static unsigned int yResolution;
-static int isNTXDiamond = 0;
 static int isCalibrated;
 static int gELAN_I2C_format = 0;
-static int g_fw_id, g_fw_version;
+static int g_fw_id, g_fw_version, g_sensor_option;
+static int g_manual_iap_flow = -1;
 
 static uint8_t *gElanBuffer;
+static uint8_t *packet_buf;
 
 //#endif
 //#define _WITH_DELAY_WORK_
+#define _THREADED_IRQ_
 static const char ELAN_TS_NAME[]	= "elan-touch";
 #define TS_POLL_PERIOD	msecs_to_jiffies(10) /* ms delay between samples */
 
@@ -80,6 +83,7 @@ static uint8_t RECOVERY=0x00;
 
 static struct elan_data {
 	int intr_gpio;
+	int rst_gpio;
 	int use_irq;
 	struct hrtimer timer;
 #ifdef _WITH_DELAY_WORK_
@@ -93,10 +97,17 @@ static struct elan_data {
 } elan_touch_data;
 
 extern unsigned int msp430_read(unsigned int reg);
+extern int is_touch_resetting(void);
+
 /*--------------------------------------------------------------*/
 static int elan_touch_detect_int_level(void)
 {
 	return gpio_get_value(elan_touch_data.intr_gpio);
+}
+
+static int elan_touch_detect_rst_level(void)
+{
+	return gpio_get_value(elan_touch_data.rst_gpio);
 }
 
 static int __elan_touch_poll(struct i2c_client *client)
@@ -125,19 +136,25 @@ static int __hello_packet_handler(struct i2c_client *client)
 	rc = elan_touch_poll(client);
 
 	if (rc < 0) {
+		printk ("[elan] %s: touch_int not low.\n", __func__);
 		return -EINVAL;
 	}
 
 	rc = i2c_master_recv(client, buf_recv, 8);
 	if (rc != 8) {
+		printk ("[elan] %s: i2c receive failed.\n", __func__);
 		return -1;	// Joseph 20101025
 	} else {
-		printk("[elan] %s: hello packet %02x:%02X:%02x:%02x:%02x:%02x:%02x:%02x\n", __func__, buf_recv[0], buf_recv[1], buf_recv[2], buf_recv[3] , buf_recv[4], buf_recv[5], buf_recv[6], buf_recv[7]);
+		printk("[elan] %s: hello packet %02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x\n", __func__, buf_recv[0], buf_recv[1], buf_recv[2], buf_recv[3] , buf_recv[4], buf_recv[5], buf_recv[6], buf_recv[7]);
 	
 		if(buf_recv[0]==0x55 && buf_recv[1]==0x55 && buf_recv[2]==0x80 && buf_recv[3]==0x80)
 		{
 			RECOVERY=0x80;
+			g_sensor_option = ((buf_recv[4] & 0xff) <<8 ) | (buf_recv[5] & 0xff);
+			printk ("[%s-%d] in RECOVERY MODE, Sensor option = 0x%04X\n", __func__, __LINE__, g_sensor_option);
 			return RECOVERY; 
+		} else {
+			RECOVERY=0x00;
 		}
 		for (i = 0; i < 2; i++)
 			if (buf_recv[i] != hello_packet)
@@ -161,7 +178,6 @@ static inline int elan_touch_parse_xy(uint8_t *data, uint16_t *x, uint16_t *y)
 	*y <<= 1;
 #else
 	int screenX = ELAN_TS_HIGHT-1 , screenY = ELAN_TS_WIDTH-1; 
-        long temp_y;
 	int elanInternalX = 832, elanInternalY = 1280;  //default 1024*758
 	if (1==gELAN_I2C_format) {
 		elanInternalX = xResolution;
@@ -229,17 +245,6 @@ static inline int elan_touch_parse_xy(uint8_t *data, uint16_t *x, uint16_t *y)
 
 	/* returns 0 if no data (0,0) reported by touch controller*/
 	/* returns 1 if any data reported 									 			*/ 
-
-        // apply an offset to x-coordinate to compensate for the lousy touch hardware
-        if ((_x==0) && (_y==0)) {
-        } else {
-            //pr_info("elan original [%d,%d]", *x, *y);
-            temp_y = *y + (((*y-536)/(107))*8);
-            if ((temp_y < 1072) && (temp_y>0)) {
-                //pr_info("elan original=[%d], modified=[%d], x=[%d]", *y, temp_y, *x);
-                *y = temp_y;
-            }
-        }
 	return ( _x || _y );
 }
 
@@ -252,7 +257,7 @@ static void __elan_touch_calibration (struct i2c_client *client)
 	uint8_t cmd_calib2[] = {0x97, 0xFF, 0xF0, 0x00, 0x00, 0xF1};
 	uint8_t cmd_calib3[] = {0x96, 0x04, 0x91, 0x00, 0x00, 0xF1};
 
-	if (!isNTXDiamond || isCalibrated)
+	if (isCalibrated)
 		return;
 
 	i2c_master_send(client, cmd_calib0, 6);
@@ -274,6 +279,52 @@ static void __elan_touch_calibration (struct i2c_client *client)
 		printk ("[%s-%d] set calibration failed. \n", __func__, __LINE__);
 }
 
+static void __elan_10A6_calibration (struct i2c_client *client)
+{
+	int rc;
+	uint8_t buf_recv[6] = { 0 };
+	uint8_t cmd_calib0[] = {0x97 ,0xFF ,0xF1 ,0x00 ,0x00 ,0xF1} ;//delay 100ms 
+	uint8_t cmd_calib1[] = {0x97 ,0x04 ,0x88 ,0x00 ,0x00 ,0xF1} ;//delay 10ms
+	uint8_t cmd_calib2[] = {0x97 ,0x04 ,0x41 ,0x01 ,0x27 ,0xF1} ;//delay 10ms
+	uint8_t cmd_calib3[] = {0x97 ,0x04 ,0x42 ,0x01 ,0x27 ,0xF1} ;//delay 10ms
+	uint8_t cmd_calib4[] = {0x97 ,0x04 ,0xb2 ,0x00 ,0x00 ,0xF1} ;//delay 10ms
+	uint8_t cmd_calib5[] = {0x97 ,0x04 ,0x54 ,0x00 ,0x06 ,0xF1} ;//delay 10ms
+	uint8_t cmd_calib6[] = {0x97 ,0x04 ,0x55 ,0x03 ,0x84 ,0xF1} ;//delay 10ms 
+	uint8_t cmd_calib7[] = {0x97 ,0x04 ,0x56 ,0x03 ,0x20 ,0xF1} ;//delay 10ms 
+	uint8_t cmd_calib8[] = {0x97 ,0x04 ,0x75 ,0x02 ,0x58 ,0xF1} ;//delay 10ms
+	uint8_t cmd_calib9[] = {0x97 ,0x04 ,0xd2 ,0x00 ,0x0C ,0xF1} ;//delay 10ms  
+	uint8_t cmd_calib10[] = {0x97 ,0xFF ,0xF0 ,0x00 ,0x00 ,0xF1} ;//delay 200ms 
+
+	if (isCalibrated)
+		return;
+
+	i2c_master_send(client, cmd_calib0, 6);
+	msleep (100);
+	i2c_master_send(client, cmd_calib1, 6);
+	msleep (10);
+	i2c_master_send(client, cmd_calib2, 6);
+	msleep (10);
+	i2c_master_send(client, cmd_calib3, 6);
+	msleep (10);
+	i2c_master_send(client, cmd_calib4, 6);
+	msleep (10);
+	i2c_master_send(client, cmd_calib5, 6);
+	msleep (10);
+	i2c_master_send(client, cmd_calib6, 6);
+	msleep (10);
+	i2c_master_send(client, cmd_calib7, 6);
+	msleep (10);
+	i2c_master_send(client, cmd_calib8, 6);
+	msleep (10);
+	i2c_master_send(client, cmd_calib9, 6);
+	msleep (10);
+	i2c_master_send(client, cmd_calib10, 6);
+	msleep (200);
+
+	isCalibrated=1;
+	printk ("[%s-%d] 10A6 calibration done. \n", __func__, __LINE__);
+}
+
 /*	__elan_touch_init -- hand shaking with touch panel
  *
  *	1.recv hello packet
@@ -282,6 +333,7 @@ static int __elan_touch_init(struct i2c_client *client)
 {
 	int rc;
 	int major,minor;
+	int retry_cnt=5;
 	uint8_t buf_recv[4] = { 0 };
 	uint8_t getFirmwareVer[] = {0x53,0x00,0x00,0x01};
 	uint8_t getFirmwareId[] = {0x53,0xF0,0x00,0x01};
@@ -289,7 +341,10 @@ static int __elan_touch_init(struct i2c_client *client)
 	uint8_t cmd_y[] = {0x53, 0x63, 0x00, 0x00}; /*Get y resolution*/
 	uint8_t cmd_bc[] = {0x53, 0x01, 0x00, 0x01};/* Get BootCode Version*/
 	
-	rc = __hello_packet_handler(client);
+	do {
+		rc = __hello_packet_handler(client);
+	} while (rc<0 && retry_cnt--);
+
 	if (rc < 0)
 		goto hand_shake_failed;
 	
@@ -314,10 +369,10 @@ static int __elan_touch_init(struct i2c_client *client)
 		//printk("%s():fw_id=0x%x,pcbid=%d\n",__FUNCTION__,fw_id,(int)gptHWCFG->m_val.bPCB);
 		if (40==gptHWCFG->m_val.bPCB || 
 				49==gptHWCFG->m_val.bPCB || 
-				52==gptHWCFG->m_val.bPCB) 
+				52==gptHWCFG->m_val.bPCB ||
+				70==gptHWCFG->m_val.bPCB)
 		{
-			// E60Q5X , E60QD2
-			isNTXDiamond = 1;
+			// E60Q5X , E60QD2 , E60QG2
 			msp430_homepad_sensitivity_set(0x05);
 		}
 		gELAN_I2C_format = 1;
@@ -331,6 +386,7 @@ static int __elan_touch_init(struct i2c_client *client)
 	}
 
 	gElanBuffer = kmalloc(IDX_PACKET_SIZE*IDX_QUEUE_SIZE*sizeof(uint8_t),GFP_KERNEL);
+	packet_buf = kmalloc(IDX_PACKET_SIZE*sizeof(uint8_t),GFP_KERNEL);
 
 	if(1==gELAN_I2C_format) {
 		i2c_master_send(client, cmd_bc, 4);
@@ -347,7 +403,12 @@ static int __elan_touch_init(struct i2c_client *client)
 		yResolution =  (((buf_recv[2])) | ((buf_recv[3] & 0xf0) << 4));
 		printk ("[%s-%d] y resolution: %d \n", __func__, __LINE__, yResolution);
 
-		__elan_touch_calibration (client);
+		if( (0x0DE1==g_fw_id && (0x10A6==g_fw_version||0x10A5==g_fw_version)) || 
+			(0x00B6==g_fw_id && 0x10A1==g_fw_version) ) {
+			__elan_10A6_calibration (client);
+		} else if(0x0499==g_fw_id){
+			__elan_touch_calibration (client);
+		}
 		return 4;
 	}
 
@@ -390,7 +451,7 @@ void elan_touch_enqueue (void)
 			ntx_gpio_touch_reset ();
 			touch_failed_count = 0;
 		}
-#ifdef	_WITH_DELAY_WORK_
+#ifdef _WITH_DELAY_WORK_
 		schedule_delayed_work(&elan_touch_data.work, 1);
 #else
 		queue_work(elan_wq, &elan_touch_data.work);
@@ -398,6 +459,7 @@ void elan_touch_enqueue (void)
 	}
 }
 
+static unsigned long gLastTouchReportTime;
 static void elan_touch_report_data(struct i2c_client *client, uint8_t *buf)
 {
 	int i, major, minor;
@@ -514,27 +576,46 @@ static void elan_touch_report_data(struct i2c_client *client, uint8_t *buf)
 #endif			
 		}
 		input_sync(elan_touch_data.input);
+		gLastTouchReportTime = jiffies;
 		schedule();	// Joseph 20101023
 		break;
 	}
 	
 	case hello_packet:
-		printk ("[%s-%d] Hello packet received!\n", __func__, __LINE__);
-		__elan_touch_calibration (client);
+		printk("[%s-%d] Hello packet %02x:%02X:%02x:%02x:%02x:%02x:%02x:%02x received\n", __func__, __LINE__, buf[0], buf[1], buf[2], buf[3] , buf[4], buf[5], buf[6], buf[7]);
+		if(buf[0]==0x55 && buf[1]==0x55 && buf[2]==0x80 && buf[3]==0x80)
+		{
+			RECOVERY=0x80;
+			g_sensor_option = ((buf[4] & 0xff) <<8 ) | (buf[5] & 0xff);
+			printk ("[%s-%d] in RECOVERY MODE, Sensor option = 0x%04X\n", __func__, __LINE__, g_sensor_option);
+		} else {
+			RECOVERY=0x00;
+		}
+		if( (0x0DE1==g_fw_id && (0x10A6==g_fw_version||0x10A5==g_fw_version)) || 
+			(0x00B6==g_fw_id && 0x10A1==g_fw_version) ) {
+			__elan_10A6_calibration (client);
+		} else if(0x0499==g_fw_id){
+			__elan_touch_calibration (client);
+		}
 		break;
 	case version_id_packet:
-		major = ((buf[1] & 0x0f) << 4) | ((buf[2] & 0xf0) >> 4);
-		minor = ((buf[2] & 0x0f) << 4) | ((buf[3] & 0xf0) >> 4);
-		if( (buf[1]>>4) == 0xf) {
-			g_fw_id = major << 8 | minor;
-//			printk ("[%s-%d] firmware id %04X\n", __func__, __LINE__, g_fw_id);
-		} else if ( (buf[1]>>4) == 0x0 ) {
-			g_fw_version = major << 8 | minor;
-//			printk ("[%s-%d] firmware version %04X\n", __func__, __LINE__, g_fw_version);
+		if( buf[1]==0xD3) {
+//			printk ("[%s-%d] Sensor option %02X %02X %02X %02X\n", __func__, __LINE__, buf[0], buf[1], buf[2], buf[3]);
+			g_sensor_option = ((buf[2] & 0xff) <<8 ) | (buf[3] & 0xff);
+		} else {
+			major = ((buf[1] & 0x0f) << 4) | ((buf[2] & 0xf0) >> 4);
+			minor = ((buf[2] & 0x0f) << 4) | ((buf[3] & 0xf0) >> 4);
+			if( (buf[1]>>4) == 0xf) {
+				g_fw_id = major << 8 | minor;
+//				printk ("[%s-%d] firmware id %04X\n", __func__, __LINE__, g_fw_id);
+			} else if ( (buf[1]>>4) == 0x0 ) {
+				g_fw_version = major << 8 | minor;
+//				printk ("[%s-%d] firmware version %04X\n", __func__, __LINE__, g_fw_version);
+			}
 		}
 		break;
 	default:
-		printk ("[%s-%d] undefined packet 0x%02X.\n", __func__, __LINE__, buf[0]);
+		printk ("[%s-%d] undefined packet 0x%02X.(touch pressed %d)\n", __func__, __LINE__, buf[0], g_touch_pressed);
 		for (i=0; i<IDX_PACKET_SIZE; i++) {
 			printk ("0x%02X ", buf[i]);
 			if (idx_coordinate_packet == buf[i]) {
@@ -567,7 +648,32 @@ static void elan_touch_work_func(struct work_struct *work)
 static irqreturn_t elan_touch_ts_interrupt(int irq, void *dev_id)
 {
 	g_touch_triggered = 1;
-#ifdef	_WITH_DELAY_WORK_
+#ifdef _THREADED_IRQ_
+	int rc;
+
+	if ( elan_touch_detect_int_level ())
+	{
+		printk("[elan] Detected the jitter on INT pin\n");
+		return IRQ_HANDLED;
+	}
+	if ( !elan_touch_detect_rst_level () || is_touch_resetting() )
+	{
+		DBG_MSG ("[elan] Control IC resetting, skip INT handler\n");
+		return IRQ_HANDLED;
+	}
+	rc = elan_touch_recv_data(elan_touch_data.client, packet_buf);
+	if (rc < 0)
+	{
+		printk("[elan] Received the packet Error.\n");
+		return IRQ_HANDLED;
+	}
+//	printk("[elan_debug] %2x,%2x,%2x,%2x,%2x,%2x,%2x,%2x ....., %2x\n",\
+		packet_buf[0],packet_buf[1],packet_buf[2],packet_buf[3],packet_buf[4],\
+		packet_buf[5],packet_buf[6],packet_buf[7],packet_buf[17]);
+
+	elan_touch_report_data(elan_touch_data.client, packet_buf);
+	g_touch_triggered = 0;
+#elif	_WITH_DELAY_WORK_
 	schedule_delayed_work(&elan_touch_data.work, 0);
 #else
 //	disable_irq(elan_touch_data.client->irq);
@@ -583,11 +689,16 @@ void elan_touch_ts_triggered(void)
 {
 	g_touch_triggered = 1;
 //	elan_touch_enqueue ();
-#ifdef	_WITH_DELAY_WORK_
+#ifdef _THREADED_IRQ_
+	elan_touch_recv_data(elan_touch_data.client, packet_buf);
+	elan_touch_report_data(elan_touch_data.client, packet_buf);
+
+	g_touch_triggered = 0;
+#elif	_WITH_DELAY_WORK_
 	schedule_delayed_work(&elan_touch_data.work, 0);
 #else
 	queue_work(elan_wq, &elan_touch_data.work);
-#endif			
+#endif	
 }
 
 static enum hrtimer_restart elan_touch_timer_func(struct hrtimer *timer)
@@ -604,9 +715,16 @@ static int elan_touch_register_interrupt(struct i2c_client *client)
 
 	if (client->irq) {
 		elan_touch_data.use_irq = 1;
+#ifdef _THREADED_IRQ_
+		if (55==gptHWCFG->m_val.bPCB) {  //E70Q02
+			err = request_threaded_irq(client->irq, NULL, elan_touch_ts_interrupt, IRQF_TRIGGER_LOW | IRQF_ONESHOT, ELAN_TS_NAME, &elan_touch_data);
+		} else {
+			err = request_threaded_irq(client->irq, NULL, elan_touch_ts_interrupt, IRQF_TRIGGER_FALLING | IRQF_ONESHOT, ELAN_TS_NAME, &elan_touch_data);
+		}
+#else
 		err = request_irq(client->irq, elan_touch_ts_interrupt, IRQF_TRIGGER_FALLING,
 				  ELAN_TS_NAME, &elan_touch_data);
-
+#endif
 		if (err < 0) {
 			printk("%s(%s): Can't allocate irq %d\n", __FILE__, __func__, client->irq);
 			elan_touch_data.use_irq = 0;
@@ -629,17 +747,23 @@ extern int gSleep_Mode_Suspend;
 static int gTouchDisabled;
 static int elan_touch_suspend(struct platform_device *pdev, pm_message_t state)
 {
-	if (g_touch_pressed || g_touch_triggered || !elan_touch_detect_int_level ()) 
-	{
-		elan_touch_ts_triggered ();
-		printk ("[%s-%d] elan touch event not processed.\n",__func__,__LINE__);
-		return -1;
-	}
 	if (gSleep_Mode_Suspend) {
 //		disable_irq_wake (elan_touch_data.client->irq);
 		free_irq(elan_touch_data.client->irq, &elan_touch_data);
 		gTouchDisabled = 1;
 		isCalibrated = 0;
+		g_touch_pressed = 0;
+		g_touch_triggered = 0;
+	}
+	else if (g_touch_pressed || g_touch_triggered || !elan_touch_detect_int_level ())
+	{
+		elan_touch_ts_triggered ();
+		printk ("[%s-%d] elan touch event not processed (pressed=0x%x,triggered=%d).\n",__func__,__LINE__,g_touch_pressed,g_touch_triggered);
+		return -1;
+	}
+	else if (gLastTouchReportTime && time_before(jiffies, gLastTouchReportTime+50)) {
+		printk ("[%s-%d] touch event just sent %d, %d.\n",__func__,__LINE__,gLastTouchReportTime, jiffies);
+		return -1;
 	}
 	else
 		enable_irq_wake (elan_touch_data.client->irq);
@@ -652,8 +776,7 @@ static int elan_touch_resume(struct platform_device *pdev)
 		elan_touch_ts_triggered ();
 	}
 	if (gSleep_Mode_Suspend && gTouchDisabled)
-//		enable_irq_wake (elan_touch_data.client->irq);
-		request_irq(elan_touch_data.client->irq, elan_touch_ts_interrupt, IRQF_TRIGGER_FALLING, ELAN_TS_NAME, &elan_touch_data);
+		elan_touch_register_interrupt(elan_touch_data.client);
 	else
 		disable_irq_wake (elan_touch_data.client->irq);
 	gTouchDisabled = 0;
@@ -667,11 +790,11 @@ static int elan_touch_resume(struct platform_device *pdev)
 enum
 {
 	PageSize		= 132,
-	PageNum		    = 249,
 	ACK_Fail		= 0x00,
 	ACK_OK			= 0xAA,
 	ACK_REWRITE		= 0x55,
 };
+static int PageNum = 249;
 
 void print_progress(int page, int ic_num, int j)
 {
@@ -683,19 +806,19 @@ void print_progress(int page, int ic_num, int j)
 		str[i+1] = '\0';
 	}
 	
-	page_tatol=page+249*(ic_num-j);
-	percent = ((100*page)/(249));
-	percent_tatol = ((100*page_tatol)/(249*ic_num));
+	page_tatol=page+PageNum*(ic_num-j);
+	percent = ((100*page)/(PageNum));
+	percent_tatol = ((100*page_tatol)/(PageNum*ic_num));
 
-	if ((page) == (249))
+	if ((page) == (PageNum))
 		percent = 100;
 
-	if ((page_tatol) == (249*ic_num))
+	if ((page_tatol) == (PageNum*ic_num))
 		percent_tatol = 100;		
 
 	printk("\rprogress %s| %d%%", str, percent);
 	
-	if (page == (249))
+	if (page == (PageNum))
 		printk("\n");
 }
 
@@ -774,6 +897,66 @@ int GetAckData( void )
 		return ACK_Fail;
 }
 
+static int _sensorOption_read(void)
+{
+	g_sensor_option = 0;
+	uint8_t getSensorOption[] = {0x53,0xd3,0x00,0x01};
+
+	i2c_master_send(elan_touch_data.client, getSensorOption, 4);
+	msleep(20);
+	return g_sensor_option;
+}
+
+static int isNewIAPflow(void)
+{
+	int newIAPflow = 0;
+
+	if(g_manual_iap_flow>=0) { //manual set
+		printk("[elan] Manually set iap flow: %d\n", g_manual_iap_flow);
+		newIAPflow = g_manual_iap_flow;
+	} else if(RECOVERY==0x80) {  //recovery mode
+		switch(g_sensor_option) {
+			case 0x10D3:
+			case 0x00B6:
+			case 0x0499:
+			case 0x2422:
+			case 0x0D01:
+			case 0x0DE1:
+			case 0x1B50:
+				 //those follow old IAP flow
+				break; 
+			default:
+				newIAPflow = 1;
+				break;
+		}
+	} else { //normal mode
+		switch(g_fw_id) {
+			case 0x10D3:
+			case 0x00B6:
+			case 0x0499:
+			case 0x2422:
+			case 0x0D01:
+			case 0x0DE1:
+			case 0x1B50:
+				//those follow old IAP flow
+				break; 
+			default:
+				newIAPflow = 1;
+				break;
+		}
+	}
+	return newIAPflow;
+}
+
+static int needIspCmd(void)
+{
+	if(RECOVERY==0x80 && !isNewIAPflow()){
+		return 0;
+	} else {
+		return 1;
+	}
+}
+
 static ssize_t fwupg_write(struct device *dev, struct device_attribute *attr,
 		       const char *buf, size_t count)
 {
@@ -797,19 +980,18 @@ static ssize_t fwupg_write(struct device *dev, struct device_attribute *attr,
 		total = count;
 //		disable_irq (elan_touch_data.client->irq);
 	
-		if(RECOVERY != 0x80)
+		if(needIspCmd())
 		{
-			printk("[ELAN] Firmware upgrade normal mode !\n");
-			if(g_fw_id!=0x10D3 && g_fw_id!=0x00B6 && g_fw_id!=0x0499 && g_fw_id!=0x2422 ){
+			if(isNewIAPflow())
+			{
 				isp_cmd[0]=0x45;
 				isp_cmd[1]=0x49;
 				isp_cmd[2]=0x41;
 				isp_cmd[3]=0x50;
-
 				ntx_gpio_touch_easyreset ();
 				mdelay (20);
 			} else {
-				ntx_gpio_touch_reset ();
+				ntx_gpio_touch_easyreset ();
 				mdelay (500);
 			}
 //			__hello_packet_handler (elan_touch_data.client);
@@ -829,8 +1011,6 @@ static ssize_t fwupg_write(struct device *dev, struct device_attribute *attr,
 				}
 				mdelay (50);
 			}
-		} else {
-			printk("[ELAN] Firmware upgrade recovery mode !\n");
 		}
 		
 		if(sizeof(data) != i2c_master_send(elan_touch_data.client, &data,  sizeof(data)))
@@ -880,7 +1060,7 @@ PAGE_REWRITE:
 		curIndex =  curIndex + PageSize;
 		res = WritePage(szBuff, PageSize);
 #endif
-		if(iPage==249 || iPage==1)
+		if(iPage==PageNum || iPage==1)
 		{
 			mdelay(600); 			 
 		}
@@ -899,7 +1079,7 @@ PAGE_REWRITE:
 				if (rewriteCnt == PAGERETRY)
 				{
 					printk("[ELAN] ID 0x%02x %dth page ReWrite %d times fails!\n", data, iPage, PAGERETRY);
-					ntx_gpio_touch_reset ();
+					ntx_gpio_touch_easyreset ();
 					iPage = 0;
 					return -1;
 				}
@@ -911,7 +1091,7 @@ PAGE_REWRITE:
 			}
 			else
 			{
-				ntx_gpio_touch_reset ();
+				ntx_gpio_touch_easyreset ();
 				iPage = 0;
 				return -1;
 			}
@@ -940,7 +1120,7 @@ PAGE_REWRITE:
 
 	iPage = 0;
 #if 1
-	ntx_gpio_touch_reset ();
+	ntx_gpio_touch_easyreset ();
 	printk("[ELAN] read Hello packet data!\n"); 	  
 	res= __hello_packet_handler(elan_touch_data.client);
 	if (res > 0)
@@ -948,6 +1128,13 @@ PAGE_REWRITE:
 		
 #endif
 //	enable_irq (elan_touch_data.client->irq);
+	return count;
+}
+
+static ssize_t manualIapFlow_set(struct device *dev, struct device_attribute *attr,
+		       const char *buf, size_t count)
+{
+	sscanf(buf, "%d", &g_manual_iap_flow);
 	return count;
 }
 
@@ -973,17 +1160,29 @@ static ssize_t firmwareId_read(struct device *dev, struct device_attribute *attr
 	return sprintf(buf, "%d",g_fw_id);
 }
 
+static ssize_t sensorOption_read(struct device *dev, struct device_attribute *attr,
+			char *buf)
+{
+	if(0x80==RECOVERY){
+		return sprintf(buf, "%d", g_sensor_option);
+	}
+	return sprintf(buf, "%d", _sensorOption_read());
+}
+
 static DEVICE_ATTR(fwupg, 0666, NULL, fwupg_write);
+static DEVICE_ATTR(manualIapFlow, S_IWUGO, NULL, manualIapFlow_set);
 static DEVICE_ATTR(version, S_IRUGO, version_read, NULL);
 static DEVICE_ATTR(firmwareId, S_IRUGO, firmwareId_read, NULL);
+static DEVICE_ATTR(sensorOption, S_IRUGO, sensorOption_read, NULL);
 
 static const struct attribute *sysfs_touch_attrs[] = {
 	&dev_attr_fwupg.attr,
+	&dev_attr_manualIapFlow.attr,
 	&dev_attr_version.attr,
 	&dev_attr_firmwareId.attr,
+	&dev_attr_sensorOption.attr,
 	NULL,
 };
-
 
 static int elan_touch_probe(
 	struct i2c_client *client, const struct i2c_device_id *id)
@@ -992,16 +1191,18 @@ static int elan_touch_probe(
 
 	elan_touch_data.client = client;
 	elan_touch_data.intr_gpio = (client->dev).platform_data;
+	elan_touch_data.rst_gpio = gMX6SL_IR_TOUCH_RST;
 	
 	err = __elan_touch_init(client);
 	if (err < 0) {
 	    printk("Read Hello Packet Fail\n");
 	    return err;
 	}
-	
+
 	strlcpy(client->name, ELAN_TS_NAME, I2C_NAME_SIZE);
 
-#ifdef	_WITH_DELAY_WORK_
+#ifdef _THREADED_IRQ_	
+#elif _WITH_DELAY_WORK_
 	INIT_DELAYED_WORK(&elan_touch_data.work, elan_touch_work_func);
 #else
 	elan_wq = create_singlethread_workqueue("elan_wq");
@@ -1059,6 +1260,11 @@ static int elan_touch_probe(
 		ELAN_TS_WIDTH=1600;
 		ELAN_TS_HIGHT=1200;
 	}
+	else if(8==gptHWCFG->m_val.bDisplayResolution) {
+		// 1872x1404
+		ELAN_TS_WIDTH=1872;
+		ELAN_TS_HIGHT=1404;
+	}
 	else {
 		// 800x600 
 		ELAN_TS_WIDTH=800;
@@ -1067,6 +1273,10 @@ static int elan_touch_probe(
 
 	ELAN_TS_X_MAX=ELAN_TS_WIDTH;
 	ELAN_TS_Y_MAX=ELAN_TS_HIGHT;
+
+	if (0x242B==g_fw_id || 55==gptHWCFG->m_val.bPCB || 70==gptHWCFG->m_val.bPCB ) {  //E70Q02/E70Q2X
+		PageNum = 377;
+	}
 
 	input_set_abs_params(elan_touch_data.input, ABS_X, 0, ELAN_TS_X_MAX, 0, 0);
 	input_set_abs_params(elan_touch_data.input, ABS_Y, 0, ELAN_TS_Y_MAX, 0, 0);
@@ -1107,6 +1317,7 @@ static int elan_touch_remove(struct i2c_client *client)
 		destroy_workqueue(elan_wq);
 
 	kfree(gElanBuffer);
+	kfree(packet_buf);
 
 	input_unregister_device(elan_touch_data.input);
 

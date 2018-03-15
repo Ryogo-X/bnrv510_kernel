@@ -34,6 +34,7 @@ extern void set_pmic_dc_charger_state(int dccharger);
 static void usb_plug_handler(void *dummy)
 {
 	int plugged;
+	static int last_status=-1;
 
 	GALLEN_DBGLOCAL_BEGIN();
 
@@ -48,8 +49,12 @@ static void usb_plug_handler(void *dummy)
 		return ;
 	}
 
-
 	plugged = mxc_usbplug->get_status();
+
+	if(plugged==last_status) {
+		return ;
+	}
+
 	if (plugged) {
 		int charger;
 		int ret;
@@ -112,6 +117,7 @@ static void usb_plug_handler(void *dummy)
 		set_pmic_dc_charger_state(0);
 		pr_info("usb unplugged\n");
 	}
+	last_status = plugged;
 	GALLEN_DBGLOCAL_END();
 }
 

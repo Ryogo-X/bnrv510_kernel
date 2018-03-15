@@ -22,6 +22,7 @@
 //#define DITHER_ENABLE		1
 #define FW_IN_RAM	1
 
+
 #define WF_INIT	0
 #define WF_DU	1
 #define WF_GC16	2
@@ -46,10 +47,18 @@ static int giLastTemprature = DEFAULT_TEMP;
 static volatile unsigned long gdwLastUpdateJiffies = 0;
 static int giIsInited = 0;
 DECLARE_COMPLETION(mxc_epdc_fake13522_inited);
+#define EPD_PMIC_EXCEPTION_STATE_NONE							0
+#define EPD_PMIC_EXCEPTION_STATE_ABORTING					-1
+#define EPD_PMIC_EXCEPTION_STATE_REUPDATE_INIT		1
+#define EPD_PMIC_EXCEPTION_STATE_REUPDATING				2		
+static volatile int giEPD_PMIC_exception_state = EPD_PMIC_EXCEPTION_STATE_NONE;
+static struct mxcfb_rect gtEPD_PMIC_exception_rect;
+#define INVALID_TEMP	500
+static int giCustomTemp=INVALID_TEMP;
 
 
 static char gcFB_snapshot_pathA[512+2];
-static int giFB_snapshot_enable;
+volatile static int giFB_snapshot_enable;
 #ifdef OUTPUT_SNAPSHOT_IMGFILE//[
 static int giFB_snapshot_total=OUTPUT_SNAPSHOT_IMGFILE;
 #else //]OUTPUT_SNAPSHOT_IMGFILE
@@ -63,6 +72,7 @@ static int giDither_enable;
 
 
 static void epdc_powerup(struct mxc_epdc_fb_data *fb_data);
+static void epdc_powerdown(struct mxc_epdc_fb_data *fb_data);
 
 
 //
@@ -329,14 +339,21 @@ static ssize_t temperature_write(struct device *dev, struct device_attribute *at
 	int iChk,iLastTemprature;
 
 	iLastTemprature = simple_strtol(buf,NULL,0);
-	iChk = mxc_epdc_fb_set_temperature(iLastTemprature,&g_fb_data->info);
-	if(0==iChk) {
-		DBG_MSG("%s(),temp <== %d\n",__FUNCTION__,iLastTemprature);
-		giLastTemprature = iLastTemprature;
-		gdwLastUpdateJiffies = jiffies+(60*HZ);
+	if(iLastTemprature>=INVALID_TEMP) {
+		giCustomTemp=INVALID_TEMP;
+		gdwLastUpdateJiffies = jiffies;
 	}
 	else {
-		ERR_MSG("%s(),temp <== %d fail!\n",__FUNCTION__,iLastTemprature);
+		iChk = mxc_epdc_fb_set_temperature(iLastTemprature,&g_fb_data->info);
+		if(0==iChk) {
+			DBG_MSG("%s(),temp <== %d\n",__FUNCTION__,iLastTemprature);
+			giLastTemprature = iLastTemprature;
+			gdwLastUpdateJiffies = jiffies+(60*HZ);
+			giCustomTemp=iLastTemprature;
+		}
+		else {
+			ERR_MSG("%s(),temp <== %d fail!\n",__FUNCTION__,iLastTemprature);
+		}
 	}
 
 	return count;
@@ -713,8 +730,13 @@ static int k_set_temperature(struct fb_info *info)
 	//printk("%s(),timeout_tick=%u,current_tick=%u\n",__FUNCTION__,
 	//		gdwLastUpdateJiffies,jiffies);
 	
+	
 	if(0==gdwLastUpdateJiffies||time_after(jiffies,gdwLastUpdateJiffies)) {
 		
+		if(giCustomTemp!=INVALID_TEMP) {
+			printk(KERN_ERR"%s():use custom temperature %d\n",__FUNCTION__,giCustomTemp);
+			return giLastTemprature;
+		}
 
 		gdwLastUpdateJiffies = jiffies+(60*HZ);
 
@@ -874,6 +896,255 @@ static void k_create_sys_attr(void)
 	}
 }
 
+
+#define PMIC_EXCEPTION_MARKER			99999
+#define PMIC_EXCEPTION_SPLITX			3
+#define PMIC_EXCEPTION_SPLITY			2
+#if 1
+static int ntx_epdc_pmic_wait_exception_rect_reupdate(struct fb_info *info)
+{
+	if(EPD_PMIC_EXCEPTION_STATE_REUPDATING==giEPD_PMIC_exception_state) {
+		printk("waiting for pmic exception processing ...[begin]\n");
+		while(EPD_PMIC_EXCEPTION_STATE_REUPDATING==giEPD_PMIC_exception_state) {
+			msleep(100);
+		}
+		printk("waiting for pmic exception processing ...[end]\n");
+	}
+}
+#else
+static int ntx_epdc_pmic_wait_exception_rect_reupdate(struct fb_info *info)
+{
+	int iRet = 0;
+
+	int i,j;
+	const int iSplitXUpdCnt=PMIC_EXCEPTION_SPLITX,iSplitYUpdCnt=PMIC_EXCEPTION_SPLITY;
+	struct mxcfb_update_marker_data l_mxc_upd_marker_data[iSplitXUpdCnt][iSplitYUpdCnt];
+
+	for(i=0;i<iSplitXUpdCnt;i++)
+	{
+
+		for(j=0;j<iSplitYUpdCnt;j++)
+		{
+			l_mxc_upd_marker_data[i][j].collision_test = 0;
+			l_mxc_upd_marker_data[i][j].update_marker = PMIC_EXCEPTION_MARKER+i+j;
+			iRet = mxc_epdc_fb_wait_update_complete(&l_mxc_upd_marker_data[i][j],info);
+		}
+	}
+
+	return iRet;
+}
+
+#endif
+static void ntx_epdc_pmic_exception_state_set(int iState)
+{
+	giEPD_PMIC_exception_state = iState;
+}
+
+static void ntx_epdc_pmic_exception_state_clear(void)
+{
+	ntx_epdc_pmic_exception_state_set(EPD_PMIC_EXCEPTION_STATE_NONE);
+}
+static void ntx_epdc_pmic_exception_abort(void)
+{
+	ntx_epdc_pmic_exception_state_set(EPD_PMIC_EXCEPTION_STATE_ABORTING);
+}
+
+static int ntx_epdc_pmic_exception_rect_reupdate(struct mxc_epdc_fb_data *fb_data,struct fb_info *info)
+{
+	int iChk = 0;
+	int i,j;
+	const int iSplitXUpdCnt=PMIC_EXCEPTION_SPLITX,iSplitYUpdCnt=PMIC_EXCEPTION_SPLITY;
+	struct mxcfb_update_data l_upd_data[iSplitXUpdCnt][iSplitYUpdCnt];
+	struct mxcfb_update_marker_data l_mxc_upd_marker_data[iSplitXUpdCnt][iSplitYUpdCnt];
+	__u32 dw_update_marker ;
+	__u32 dwX,dwY,dwW,dwH;
+	__u32 old_upd_scheme;
+
+	//dw_update_marker = fb_data->cur_update->update_desc->upd_data.update_marker;
+	dw_update_marker = PMIC_EXCEPTION_MARKER;
+	ntx_epdc_pmic_exception_state_set(EPD_PMIC_EXCEPTION_STATE_REUPDATING);
+
+	if(FB_ROTATE_UD==fb_data->epdc_fb_var.rotate || FB_ROTATE_UR==fb_data->epdc_fb_var.rotate) {
+		dwX = gtEPD_PMIC_exception_rect.top;
+		dwY = gtEPD_PMIC_exception_rect.left;
+		dwW = gtEPD_PMIC_exception_rect.width;
+		dwH = gtEPD_PMIC_exception_rect.height;
+	}
+	else {
+		dwX = gtEPD_PMIC_exception_rect.top;
+		dwY = gtEPD_PMIC_exception_rect.left;
+		dwH = gtEPD_PMIC_exception_rect.width;
+		dwW = gtEPD_PMIC_exception_rect.height;
+	}
+
+
+	printk(KERN_WARNING"volt dropped !!! update rect@ (%d,%d),w=%d,h=%d\n",
+			(int)dwX ,(int)dwY ,(int)dwW ,(int)dwH );
+
+	msleep(650);// wait epdc stable .
+
+	old_upd_scheme = fb_data->upd_scheme;
+
+	for(i=0;i<iSplitXUpdCnt;i++)
+	{
+
+		for(j=0;j<iSplitYUpdCnt;j++)
+		{
+			l_upd_data[i][j].update_mode = UPDATE_MODE_FULL;
+			l_upd_data[i][j].waveform_mode = fb_data->wv_modes.mode_gc16;
+			l_upd_data[i][j].temp = TEMP_USE_AMBIENT;
+			l_upd_data[i][j].flags = 0;
+			l_upd_data[i][j].update_marker = dw_update_marker+i+j;
+
+			l_upd_data[i][j].update_region.width = dwW/iSplitXUpdCnt;
+			l_upd_data[i][j].update_region.height = dwH/iSplitYUpdCnt;
+			l_upd_data[i][j].update_region.left = i*(dwW/iSplitXUpdCnt);
+			l_upd_data[i][j].update_region.top = j*(dwH/iSplitYUpdCnt);
+
+			if(EPD_PMIC_EXCEPTION_STATE_REUPDATING!=giEPD_PMIC_exception_state) {
+				printk("%s : [%d][%d] abort ,exception state=%d\n",
+						__FUNCTION__,i,j,giEPD_PMIC_exception_state);
+				break;
+			}
+
+			printk("split upd[%d][%d] rect@ (%d,%d),w=%d,h=%d\n",i,j,
+					(int)l_upd_data[i][j].update_region.left ,
+					(int)l_upd_data[i][j].update_region.top ,
+					(int)l_upd_data[i][j].update_region.width ,
+					(int)l_upd_data[i][j].update_region.height );
+
+			mxc_epdc_fb_set_upd_scheme(UPDATE_SCHEME_SNAPSHOT,info);
+			iChk = mxc_epdc_fb_send_update(&l_upd_data[i][j], info);
+			mxc_epdc_fb_set_upd_scheme(old_upd_scheme,info);
+
+
+			l_mxc_upd_marker_data[i][j].collision_test = 0;
+			l_mxc_upd_marker_data[i][j].update_marker = dw_update_marker+i+j;
+			iChk = mxc_epdc_fb_wait_update_complete(&l_mxc_upd_marker_data[i][j],info);
+		}
+
+		if(EPD_PMIC_EXCEPTION_STATE_REUPDATING!=giEPD_PMIC_exception_state) {
+			break;
+		}
+	}
+	ntx_epdc_pmic_exception_state_set(EPD_PMIC_EXCEPTION_STATE_NONE);
+
+	return iChk;
+}
+
+
+
+static inline void ntx_epdc_set_update_coord(u32 x,u32 y)
+{
+
+#if 0
+	printk("%s() ,exception state=%d,x=%d,y=%d\n",
+			__FUNCTION__,giEPD_PMIC_exception_state,(int)x,(int)y);
+#endif
+
+	if(EPD_PMIC_EXCEPTION_STATE_NONE!=giEPD_PMIC_exception_state) {
+		return ;
+	}
+		//gtEPD_PMIC_exception_rect.top = 0;
+		//gtEPD_PMIC_exception_rect.left = 0;
+		gtEPD_PMIC_exception_rect.left = x;
+		gtEPD_PMIC_exception_rect.top = y;
+}
+static inline void ntx_epdc_set_update_dimensions(u32 width, u32 height)
+{
+#if 0
+	printk("%s() ,exception state=%d,w=%d,h=%d\n",
+			__FUNCTION__,giEPD_PMIC_exception_state,(int)width,(int)height);
+#endif
+
+	if(EPD_PMIC_EXCEPTION_STATE_NONE!=giEPD_PMIC_exception_state) {
+		return ;
+	}
+		//gtEPD_PMIC_exception_rect.width = g_fb_data->native_width;
+		//gtEPD_PMIC_exception_rect.height = g_fb_data->native_height;
+		gtEPD_PMIC_exception_rect.width = width;
+		gtEPD_PMIC_exception_rect.height = height;
+}
+static void ntx_epdc_pmic_exception(int iEvt)
+{
+	if(7==gptHWCFG->m_val.bDisplayCtrl) {
+		// MX6SL + TPS65185 .
+		printk(KERN_ERR"%s(%d),native_w=%d,native_h=%d\n",__FUNCTION__,iEvt,
+				(int)g_fb_data->native_width,(int)g_fb_data->native_height);
+		//if(tps65185_int_state_get()>=0) 
+		{
+			tps65185_int_state_clear();
+		}
+
+		//g_fb_data->powering_down = true;
+		epdc_powerdown(g_fb_data);
+
+#ifdef VDROP_PROC_IN_KERNEL //[
+		ntx_epdc_pmic_exception_state_set(EPD_PMIC_EXCEPTION_STATE_REUPDATE_INIT);
+		if(ntx_epdc_pmic_exception_rect_reupdate(g_fb_data,&g_fb_data->info)<0) {
+			printk(KERN_WARNING"EPD PMIC exceptions occured : reupdated fail !\n");
+		}
+		else {
+			printk(KERN_WARNING"EPD PMIC exceptions occured : reupdated ok .\n");
+		}
+#else //][!VDROP_PROC_IN_KERNEL
+		ntx_epdc_pmic_exception_state_set(EPD_PMIC_EXCEPTION_STATE_REUPDATE_INIT);
+		printk(KERN_WARNING"EPD PMIC exceptions occured !!!\n");
+#endif
+
+	}
+}
+static int ntx_epdc_pmic_get_exception_state(void)
+{
+	return giEPD_PMIC_exception_state;
+}
+
+static int k_mx5_send_epd_update(struct mxcfb_mx5_update_data *ptUPD_DATA)
+{
+	int ret = 0;
+
+	if(EPD_PMIC_EXCEPTION_STATE_REUPDATING==ntx_epdc_pmic_get_exception_state()) {
+		printk(KERN_ERR"%s(%d):sending update when pmic exception processing ! scr.w=%d,scr.h=%d,upd.w=%d,upd.h=%d\n",
+			__FUNCTION__,__LINE__,g_fb_data->native_width,g_fb_data->native_height,
+			ptUPD_DATA->update_region.width,ptUPD_DATA->update_region.height);
+		if(g_fb_data->native_width==ptUPD_DATA->update_region.width && 
+			 g_fb_data->native_height==ptUPD_DATA->update_region.height )
+		{
+			ntx_epdc_pmic_exception_abort();
+		}
+		else {
+			ntx_epdc_pmic_wait_exception_rect_reupdate(&g_fb_data->info);
+		}
+
+	}
+	ptUPD_DATA->flags |= 0x100; // EPDC_FLAG_USE_ALT_BUFFER
+	ptUPD_DATA->alt_buffer_data.phys_addr = g_fb_data->info.fix.smem_start+g_fb_data->info.fix.smem_len;
+
+#if 0
+	printk("%s():smem@0x%p,sz=%ld,alt buf phy addr@%p\n",
+			__FUNCTION__,
+			g_fb_data->info.fix.smem_start,
+			g_fb_data->map_size,
+			ptUPD_DATA->alt_buffer_data.phys_addr);
+#endif
+
+	ptUPD_DATA->alt_buffer_data.width = g_fb_data->info.var.xres_virtual;
+	ptUPD_DATA->alt_buffer_data.height = g_fb_data->info.var.yres;
+	ptUPD_DATA->alt_buffer_data.alt_update_region.top = ptUPD_DATA->update_region.top;
+	ptUPD_DATA->alt_buffer_data.alt_update_region.left = ptUPD_DATA->update_region.left;
+	ptUPD_DATA->alt_buffer_data.alt_update_region.width = ptUPD_DATA->update_region.width;
+	ptUPD_DATA->alt_buffer_data.alt_update_region.height = ptUPD_DATA->update_region.height;
+	ret = mxc_epdc_fb_send_update(ptUPD_DATA, &g_fb_data->info);
+	if(-EMEDIUMTYPE==ret) {
+		printk(KERN_ERR"%s(%d):detected contents unable to update on screen !\n",
+				__FUNCTION__,__LINE__);
+		return -EMEDIUMTYPE;
+	}
+
+	return ret;
+}
+
+
 static int k_fake_s1d13522_init(unsigned char *pbInitDCbuf)
 {
 
@@ -885,7 +1156,7 @@ static int k_fake_s1d13522_init(unsigned char *pbInitDCbuf)
 
 	gptDC = fake_s1d13522_initEx3(default_bpp,g_fb_data->info.screen_base,\
 			g_fb_data->info.var.xres,g_fb_data->info.var.yres, \
-				ALIGN(g_fb_data->info.var.xres,32),ALIGN(g_fb_data->info.var.yres,128));
+			g_fb_data->info.var.xres_virtual,g_fb_data->info.var.yres_virtual);
 				
 	if(gptDC) {
 		gptDC->pfnGetWaveformBpp = k_get_wfbpp;
@@ -902,6 +1173,7 @@ static int k_fake_s1d13522_init(unsigned char *pbInitDCbuf)
 		gptDC->pfnSetVCOM = k_set_vcom;
 		gptDC->pfnGetVCOM = k_get_vcom;
 		gptDC->pfnSetVCOMToFlash = k_set_vcom_to_flash;
+		gptDC->pfnSendEPDUpd = k_mx5_send_epd_update;
 		
 		//gptDC->dwFlags |= EPDFB_DC_FLAG_OFB_RGB565;
 		gptDC->dwFlags |= EPDFB_DC_FLAG_FLASHDIRTY;
@@ -924,6 +1196,12 @@ static int k_fake_s1d13522_init(unsigned char *pbInitDCbuf)
 
 		// printk("%s(%d):%s,Display=%s\n",__FILE__,__LINE__,__FUNCTION__,
 		//	NtxHwCfg_GetCfgFldStrVal(gptHWCFG,HWCFG_FLDIDX_DisplayCtrl));
+		
+		if(7==gptHWCFG->m_val.bDisplayCtrl) {
+			// MX6SL+TPS65185
+			tps65185_int_callback_setup(ntx_epdc_pmic_exception);
+		}
+
 #ifdef LM75_ENABLED//[
 		if(gptHWCFG&&\
 				(6==gptHWCFG->m_val.bDisplayCtrl||\
@@ -1067,6 +1345,10 @@ static int k_fake_s1d13522_init(unsigned char *pbInitDCbuf)
 						ilogo_width = 1600 ;
 						ilogo_height = 1200 ;
 					}
+					else if(8==gptHWCFG->m_val.bDisplayResolution) {
+						ilogo_width = 1872 ;
+						ilogo_height = 1404 ;
+					}
 					else {
 						ilogo_width = 800 ;
 						ilogo_height = 600 ;
@@ -1118,5 +1400,12 @@ static int k_fake_s1d13522_init(unsigned char *pbInitDCbuf)
 		printk("%s(%d): init fail !!\n",__FUNCTION__,__LINE__);
 		return -1;
 	}
+}
+
+
+static int k_fake_s1d13522_pan_display(unsigned long xoffset,unsigned long yoffset)
+{
+	epdfbdc_set_fbxyoffset(gptDC,xoffset,yoffset);
+	return 0;
 }
 

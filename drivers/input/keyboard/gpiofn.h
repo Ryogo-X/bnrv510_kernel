@@ -49,6 +49,7 @@ int gpiofn_release(void);
 
 int gpiofn_suspend(void);
 void gpiofn_resume(void);
+void gpiofn_rechk(void);
 
 int gpiofn_register(GPIODATA *I_ptGPIO_Data);
 int gpiofn_unregister(GPIODATA *I_ptGPIO_Data);

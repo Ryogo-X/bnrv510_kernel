@@ -3371,6 +3371,7 @@ static int __init check_parameters(struct fsg_dev *fsg)
 
 #endif /* CONFIG_USB_FILE_STORAGE_TEST */
 
+#if 0 //[ 
 	/* Serial string handling.
 	 * On a real device, the serial string would be loaded
 	 * from permanent storage. */
@@ -3405,6 +3406,7 @@ static int __init check_parameters(struct fsg_dev *fsg)
  no_serial:
 		device_desc.iSerialNumber = 0;
 	}
+#endif //]
 
 	return 0;
 }

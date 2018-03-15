@@ -114,7 +114,12 @@ struct mxcfb_alt_buffer_data {
 	__u32 height;	/* height of entire buffer */
 	struct mxcfb_rect alt_update_region;	/* region within buffer to update */
 };
-
+struct mxcfb_alt_buffer_data_org {
+	__u32 phys_addr;
+	__u32 width;	/* width of entire buffer */
+	__u32 height;	/* height of entire buffer */
+	struct mxcfb_rect alt_update_region;	/* region within buffer to update */
+};
 struct mxcfb_update_data {
 	struct mxcfb_rect update_region;
 	__u32 waveform_mode;
@@ -123,6 +128,15 @@ struct mxcfb_update_data {
 	int temp;
 	unsigned int flags;
 	struct mxcfb_alt_buffer_data alt_buffer_data;
+};
+struct mxcfb_update_data_org {
+	struct mxcfb_rect update_region;
+	__u32 waveform_mode;
+	__u32 update_mode;
+	__u32 update_marker;
+	int temp;
+	uint flags;
+	struct mxcfb_alt_buffer_data_org alt_buffer_data;
 };
 
 struct mxcfb_update_marker_data {
@@ -183,6 +197,7 @@ struct mxcfb_csc_matrix {
 #define MXCFB_SET_TEMPERATURE		_IOW('F', 0x2C, int32_t)
 #define MXCFB_SET_AUTO_UPDATE_MODE	_IOW('F', 0x2D, __u32)
 #define MXCFB_SEND_UPDATE		_IOW('F', 0x2E, struct mxcfb_update_data)
+#define MXCFB_SEND_UPDATE_ORG		_IOW('F', 0x2E, struct mxcfb_update_data_org)
 
 #ifdef CONFIG_MACH_MX6SL_NTX //[
 	#ifdef MX50_IOCTL_IF//[

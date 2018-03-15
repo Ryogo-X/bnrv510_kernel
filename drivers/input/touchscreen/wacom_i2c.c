@@ -327,6 +327,11 @@ static int wacom_i2c_probe(struct i2c_client *client,
 		g_wac_i2c->dwXRes=1600;
 		g_wac_i2c->dwYRes=1200;
 	}
+	else if(8==gptHWCFG->m_val.bDisplayResolution) {
+		// 1872x1404
+		g_wac_i2c->dwXRes=1872;
+		g_wac_i2c->dwYRes=1404;
+	}
 	else {
 		// 800x600 
 		g_wac_i2c->dwXRes=800;

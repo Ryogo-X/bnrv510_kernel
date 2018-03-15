@@ -29,7 +29,6 @@
 #define TABLE_INDEX_MASK 	0xfff00000
 #define TABLE_ENTRY 		0x00000c02
 #define CACHE_DISABLE_MASK 	0xfffffffb
-
 #define MMDC_MAPSR_OFFSET 	0x404
 #define MMDC_MAPSR_PSS 		(1 << 4)
 #define MMDC_MAPSR_PSD 		(1 << 0)
@@ -224,6 +223,12 @@ wait_for_pll_lock:
 	cmp	r6, #0x80000000
 	bne	wait_for_pll_lock
 
+wait_for_pll2_lock:
+	ldr r6, [r1, #0x30]
+	and r6, r6, #0x80000000
+	cmp r6, #0x80000000
+	bne wait_for_pll2_lock
+
 	/* Set PLL1_sw_clk back to PLL1. */
 	ldr	r6, [r3, #0x0c]
 	bic	r6, r6, #0x4
@@ -398,12 +403,6 @@ ahb_podf2:
 	ldr	r7, [r1, #0x318] /* DRAM_DQM3 */
 	stmfd	r0!, {r4-r7}
 
-	ldr r4, [r1, #0x344] /* DRAM_SDQS0 */
-	ldr r5, [r1, #0x348] /* DRAM_SDQS1 */
-	ldr r6, [r1, #0x34c] /* DRAM_SDQS2 */
-	ldr r7, [r1, #0x350] /* DRAM_SDQS3 */
-	stmfd   r0!, {r4-r7}
-
 	ldr	r4, [r1, #0x5c4] /* GPR_B0DS */
 	ldr	r5, [r1, #0x5cc] /* GPR_B1DS */
 	ldr	r6, [r1, #0x5d4] /* GPR_B2DS */
@@ -436,12 +435,6 @@ ahb_podf2:
 	str	r5, [r1, #0x310] /* DRAM_DQM1 */
 	str	r6, [r1, #0x314] /* DRAM_DQM2 */
 	str	r7, [r1, #0x318] /* DRAM_DQM3 */
-
-	ldmea   r0!, {r4-r7}
-	str r4, [r1, #0x344] /* DRAM_SDQS0 */
-	str r5, [r1, #0x348] /* DRAM_SDQS1 */
-	str r6, [r1, #0x34c] /* DRAM_SDQS2 */
-	str r7, [r1, #0x350] /* DRAM_SDQS3 */
 
 	ldmea	r0!, {r4-r7}
 	str	r4, [r1, #0x5c4] /* GPR_B0DS */
@@ -476,11 +469,6 @@ ahb_podf2:
 	str	r0, [r1, #0x314] /* DRAM_DQM2 */
 	str	r0, [r1, #0x318] /* DRAM_DQM3 */
 
-	str r0, [r1, #0x344] /* DRAM_SDQS0 */
-	str r0, [r1, #0x348] /* DRAM_SDQS1 */
-	str r0, [r1, #0x34c] /* DRAM_SDQS2 */
-	str r0, [r1, #0x350] /* DRAM_SDQS3 */
-
 	str	r0, [r1, #0x5c4] /* GPR_B0DS */
 	str	r0, [r1, #0x5cc] /* GPR_B1DS */
 	str	r0, [r1, #0x5d4] /* GPR_B2DS */
@@ -498,7 +486,6 @@ ahb_podf2:
 
 	cmp r10, #MX6_TYPE_DDR3
 	beq ddr3_skip_io_set  /* keep DRAM_RESET & SDCKE if DDR3 */
-
 	mov	r0, #0x80000
 	str	r0, [r1, #0x320] /* DRAM_RESET */
 	mov	r0, #0x1000
@@ -835,6 +822,7 @@ Invalidate l1 dcache, r0-r4, r6, r7 used
 	and 	r2, r1, r0, lsr #13
 
 	ldr 	r1, =0x3ff
+
 	and 	r3, r1, r0, lsr #3	@ NumWays - 1
 	add 	r2, r2, #1		@ NumSets
 
@@ -963,7 +951,6 @@ suspend mode entry
 	ldr r10, [r6, #0x18]
 	lsr r10, #3
 	and r10, r10, #0x3
-
 	cmp	r12, #MXC_CPU_MX6SL
 	beq	dormant
 
@@ -1122,7 +1109,6 @@ ddr_io_save_done:
 	mrc	p15, 0, r6, c12, c0, 0	@ Secure or NS VBAR
 	mrs	r7, cpsr		@ Store CPSR
 	stmfd	r0!, {r4-r7}
-
 	/* Save diagnostic control register */
 	mrc	p15, 0, r4, c15, c0, 1	@ Diagnostic control reg
 	stmfd	r0!, {r4}
@@ -1153,14 +1139,13 @@ ddr_io_save_done:
 	 * 4. Set TTBR0.N=1, implying 0-2G is translated by TTBR0
 	 *     and 2-4G is translated by TTBR1.
 	 */
+	/* Flush the BTAC. */
+	ldr r6, =0x0
+	mcr p15, 0, r6, c7, c1, 6
 	/* Disable Branch Prediction, Z bit in SCTLR. */
 	mrc    p15, 0, r6, c1, c0, 0
 	bic    r6, r6, #0x800
 	mcr    p15, 0, r6, c1, c0, 0
-
-	/* Flush the BTAC. */
-	ldr r6, =0x0
-	mcr p15, 0, r6, c7, c1, 6
 
 	ldr r6, =iram_tlb_phys_addr
 	ldr r6, [r6]
@@ -1186,7 +1171,7 @@ ddr_io_save_done:
 	bic r6, r6, #0x4
 	mcr p15, 0, r6, c1, c0, 0
 
-    dsb
+	dsb
 
 	/* Disable L2 cache */
 #ifdef CONFIG_CACHE_L2X0
@@ -1195,7 +1180,7 @@ ddr_io_save_done:
 	mov r4, #0x0
 	str r4, [r2, #L2X0_CTRL]
 #endif
-
+ 
 /****************************************************************
 set ddr iomux to low power mode
 ****************************************************************/
@@ -1262,7 +1247,6 @@ save resume pointer into SRC_GPR1
 	sub	r1, r1, r0
 	add	r3, r3, r1
 	ldr	r1, =SRC_BASE_ADDR
-
 	add	r1, r1, #PERIPBASE_VIRT
 	str	r3, [r1, #SRC_GPR1_OFFSET]
 
@@ -1374,21 +1358,19 @@ ldo_check_done2:
 	ldr	r0, =SRC_BASE_ADDR
 	add	r0, r0, #PERIPBASE_VIRT
 	ldr	r0, [r0, #SRC_GPR2_OFFSET]
-	add	r0, r0, #PERIPBASE_VIRT
 
+	add r0, r0, #PERIPBASE_VIRT
 	ldmea	r0!, {r12}	@ get cpu type to make ddr io
 				@ offset right
 
 	ldmea	r0!, {r11}	@ standby or mem
 
 	ldmea   r0!, {r10}	@ ddr type
-
 	cmp	r12, #MXC_CPU_MX6SL
 	bne	no_analog_restore
 
 	cmp	r11, #0x1
 	bne	no_analog_restore
-
 	cmp r10, #MX6_TYPE_DDR3
 	beq	no_analog_restore
 
@@ -1491,11 +1473,6 @@ poll_dvfs_clear_1:
 	nop
 	nop
 	nop
-
-	mrc	p15, 0, r1, c1, c0, 0
-	orr	r1, r1, #(1 << 2)	@ Enable the C bit
-	mcr	p15, 0, r1, c1, c0, 0
-
 	/* Enable L2 cache here */
 #ifdef CONFIG_CACHE_L2X0
 	ldr r2, =L2_BASE_ADDR
@@ -1503,6 +1480,10 @@ poll_dvfs_clear_1:
 	mov r4, #0x1
 	str r4, [r2, #L2X0_CTRL]
 #endif
+
+	mrc	p15, 0, r1, c1, c0, 0
+	orr	r1, r1, #(1 << 2)	@ Enable the C bit
+	mcr	p15, 0, r1, c1, c0, 0
 
 	/* Restore TTBCR */
 	dsb
@@ -1526,7 +1507,6 @@ poll_dvfs_clear_1:
 	/* Flush the Branch Target Address Cache (BTAC) */
 	ldr	r6, =0x0
 	mcr	p15, 0, r6, c7, c1, 6
-
 	b 	out	/* exit standby */
 	.ltorg
 
@@ -1535,17 +1515,6 @@ when SOC exit stop mode, arm core restart from here, currently
 are running with MMU off.
 ****************************************************************/
 resume:
-
-	/*restore it with 0x1f if use ldo bypass mode.*/
-	ldr	r1, =ANATOP_BASE_ADDR
-	ldr	r3, [r1, #0x140]
-	and	r3, r3, #0x1f
-	cmp	r3, #0x1e
-	bne	ldo_check_done3
-	ldr	r3, [r1, #0x140]
-	orr	r3, r3, #0x1f
-	str	r3, [r1, #0x140]
-ldo_check_done3:
 	/* Invalidate L1 I-cache first */
 	mov	r1,	#0x0
 	mcr	p15, 0, r1, c7, c5, 0	@ Invalidate I-Cache
@@ -1558,6 +1527,22 @@ ldo_check_done3:
 	/* Need to invalidate L1 dcache */
 	invalidate_l1_dcache
 
+	/*
+	 * We did power down. Ensure bandgap is stable.
+	 */
+	ldr	r1, =ANATOP_BASE_ADDR
+bg_not_stable:
+
+
+	/*restore it with 0x1f if use ldo bypass mode.*/
+	ldr	r3, [r1, #0x140]
+	and	r3, r3, #0x1f
+	cmp	r3, #0x1e
+	bne	ldo_check_done3
+	ldr	r3, [r1, #0x140]
+	orr	r3, r3, #0x1f
+	str	r3, [r1, #0x140]
+ldo_check_done3:
 	ldr	r0, =SRC_BASE_ADDR
 	str	r1, [r0, #SRC_GPR1_OFFSET] /* clear SRC_GPR1 */
 	ldr	r0, [r0, #SRC_GPR2_OFFSET]
@@ -1567,13 +1552,11 @@ ldo_check_done3:
 	ldmea	r0!, {r11}	@ standby or mem
 
 	ldmea   r0!, {r10}	@ ddr type
-
 	cmp	r12, #MXC_CPU_MX6SL
 	bne	no_analog_restore1
 
 	cmp	r11, #0x1
 	bne	no_analog_restore1
-
 	cmp r10, #MX6_TYPE_DDR3
 	beq no_analog_restore1
 
@@ -1598,9 +1581,7 @@ dl_io_dsm_restore:
 	b	ddr_io_restore_dsm_done
 sl_io_dsm_restore:
 	sl_ddr_io_restore
-
 	ldr	r1, =MMDC_P0_BASE_ADDR
-
 	/* reset read FIFO, RST_RD_FIFO */
 	ldr	r7, =0x83c
 	ldr	r6, [r1, r7]
@@ -1690,7 +1671,6 @@ poll_dvfs_clear_2:
 	/* Restore Power control register */
 	ldmea	r0!,{r4}
 	mcr	p15, 0, r4, c15, c0, 0	@ Diagnostic control reg
-
 	/*
 	 * Enabling MMU here. Page entry needs to be altered
 	 * to create temporary 1:1 map and then resore the entry
@@ -1741,11 +1721,9 @@ use_ttbr0:
 	mcr	p15, 0, r4, c1, c0, 0
 	isb
 	dsb
-
 	ldr	r1, =mmu_on_label
 	bx	r1
 mmu_on_label:
-
 
 /************************************************************
 restore control register to enable cache
@@ -1819,5 +1797,3 @@ out:
 mx6_suspend_end:
 
 ENDPROC(mx6_suspend)
-
-

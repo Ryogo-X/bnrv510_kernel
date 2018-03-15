@@ -25,6 +25,7 @@
 #define MX6SL_HW_ID4			IMX_GPIO_NR(4, 7)	/* KEY_ROW7 */
 #define MX6SL_FL_EN				IMX_GPIO_NR(2, 10)	/* EPDC_PWRCTRL3 */
 #define MX6SL_FL_R_EN			IMX_GPIO_NR(1, 29)	/* EPDC_SDCE2 */
+#define MX6SL_FL_W_H_EN			IMX_GPIO_NR(1, 30)	/* EPDC_SDCE3 */
 #define MX6SL_EP_PWRALL			IMX_GPIO_NR(2, 14)	/* EPDC_PWRWAKEUP */
 #define MX6SL_EP_WAKEUP			IMX_GPIO_NR(2, 7)	/* EPDC_PWRCTRL0 */
 #define MX6SL_EP_PWRUP			IMX_GPIO_NR(2, 8)	/* EPDC_PWRCTRL1 */
@@ -54,17 +55,28 @@
 #define GPIO_ESD_3V3_ON		IMX_GPIO_NR(3, 29)	/* ROW2 */
 #define GPIO_ISD_3V3_ON		IMX_GPIO_NR(3, 31)	/* ROW3 */
 #define GPIO_IR_3V3_ON		IMX_GPIO_NR(4, 1)	/* ROW4 */
+#define GPIO_TP_3V3_ON		IMX_GPIO_NR(4, 3)	/* ROW5 */
 //#define GPIO_EP_3V3_ON		IMX_GPIO_NR(4, 3)	/* ROW5 */
 
 #define GPIO_KB_COL0			IMX_GPIO_NR(3, 24)	/* COL0 */
 #define GPIO_KB_COL1			IMX_GPIO_NR(3, 26)	/* COL1 */
+#define GPIO_KB_COL3			IMX_GPIO_NR(3, 30)	/* COL1 */
 
 #define GPIO_KB_ROW0			IMX_GPIO_NR(3, 25)	/* ROW0 */
 #define GPIO_KB_ROW1			IMX_GPIO_NR(3, 27)	/* ROW1 */
 #define GPIO_KB_ROW2			IMX_GPIO_NR(3, 29)	/* ROW2 */
+#define GPIO_KB_ROW3			IMX_GPIO_NR(3, 31)	/* ROW3 */
+#define GPIO_KB_ROW4			IMX_GPIO_NR(4, 1)       /* ROW4 */
+#define GPIO_KB_ROW5			IMX_GPIO_NR(4, 3)       /* ROW5 */
+#define GPIO_KB_COL4			IMX_GPIO_NR(4, 0)	/* COL4 */
+#define GPIO_KB_COL5			IMX_GPIO_NR(4, 2)       /* COL5 */
 
+
+#define MX6SL_FL_PWR_ON			IMX_GPIO_NR(3, 29)	/* ROW2 */
 #define MX6SL_KL25_INT2			IMX_GPIO_NR(3, 29)	/* ROW2 */
 #define MX6SL_P2_KL25_INT2			IMX_GPIO_NR(4, 3)	/* ROW5 */
+
+#define MX6SL_SI114X_INT		IMX_GPIO_NR(4, 0)	/* COL4 */
 #if 1
 #define MX6SL_WACOM_INT			IMX_GPIO_NR(4, 0)	/* COL4 */
 #define MX6SL_WACOM_PDCT		IMX_GPIO_NR(4, 2)	/* COL5 */
@@ -81,8 +93,21 @@
 #define MX6SL_WALTOP_INT		IMX_GPIO_NR(4, 1)       /* ROW4 */
 #define MX6SL_WALTOP_INT_4_0		IMX_GPIO_NR(4, 0)       /* ROW4 */
 
+#define MX6SL_HANVON_RST		IMX_GPIO_NR(3, 31)      /* ROW3 */
+#define MX6SL_HANVON_RST_3_30		IMX_GPIO_NR(3, 30)      /* ROW3 */
+#define MX6SL_HANVON_INT		IMX_GPIO_NR(4, 1)       /* ROW4 */
+#define MX6SL_HANVON_INT_4_0		IMX_GPIO_NR(4, 0)       /* ROW4 */
+
+#define MX6SL_AD_LDO_EN		IMX_GPIO_NR(4, 2)       /* COL5 */
+#define MX6SL_AD_1V8_ON		IMX_GPIO_NR(4, 0)       /* COL4 */
+#define MX6SL_AD_3V3_ON		IMX_GPIO_NR(3, 30)       /* COL3 */
 #define MX6SL_USB_ID			IMX_GPIO_NR(5, 9)       /* SD1_DAT5 */
 
+#define FL_COLOR_FLAGS_W			0x0001
+#define FL_COLOR_FLAGS_R			0x0002
+#define FL_COLOR_FLAGS_G			0x0004
+#define FL_COLOR_FLAGS_B			0x0008
+#define FL_COLOR_FLAGS_ALL		0x000f
 extern volatile unsigned gMX6SL_NTX_ACIN_PG;
 extern volatile unsigned gMX6SL_NTX_CHG;
 extern volatile unsigned gMX6SL_MSP_INT;
@@ -97,6 +122,8 @@ extern volatile unsigned gMX6SL_WIFI_3V3;
 extern volatile unsigned gMX6SL_WIFI_RST;
 extern volatile unsigned gMX6SL_WIFI_INT;
 
+extern volatile unsigned gMX6SL_FL_W_H_EN;
+extern volatile unsigned gMX6SL_FL_PWR_EN;
 static iomux_v3_cfg_t mx6sl_brd_ntx_kb_pads[] = {
 	MX6SL_PAD_KEY_COL0__KPP_COL_0,
 	MX6SL_PAD_KEY_COL1__KPP_COL_1,
@@ -125,10 +152,14 @@ static iomux_v3_cfg_t mx6sl_brd_ntx_sd4_pads[] = {
 	MX6SL_PAD_FEC_REF_CLK__GPIO_4_26_PULLHIGH,
 };
 
+static iomux_v3_cfg_t mx6sl_brd_ntx_sd4_clk_pads[] = {
+	MX6SL_PAD_FEC_MDIO__USDHC4_CLK,
+};
+
 static iomux_v3_cfg_t mx6sl_brd_ntx_sd4_gpio_pads[] = {
-	MX6SL_PAD_FEC_MDIO__GPIO_4_20,		// PWR_GOOD
-	MX6SL_PAD_FEC_TX_CLK__GPIO_4_21,	// CHG#
-	MX6SL_PAD_FEC_RX_ER__GPIO_4_19,		// MSP_INT#
+	MX6SL_PAD_FEC_MDIO__GPIO_4_20,		// CHG#
+	MX6SL_PAD_FEC_TX_CLK__GPIO_4_21,	// PWR_GOOD
+	MX6SL_PAD_FEC_RX_ER__GPIO_4_19,		// 
 	MX6SL_PAD_FEC_CRS_DV__GPIO_4_25,	// PWR_SW
 	MX6SL_PAD_FEC_RXD1__GPIO_4_18,		// GS_INT
 	MX6SL_PAD_FEC_TXD0__GPIO_4_24,		// IR_TOUCH_INT#
@@ -303,6 +334,20 @@ static iomux_v3_cfg_t mx6sl_ntx_q22_wifictrl_pads[] = {
 static iomux_v3_cfg_t mx6sl_ntx_q12_wifictrl_pads[] = {
 	MX6SL_PAD_SD2_DAT6__GPIO_4_29, // WiFi_INT#
 	MX6SL_PAD_SD2_DAT5__GPIO_4_31, //NC
+};
+
+static iomux_v3_cfg_t mx6sl_ntx_uart2_pads[] = {
+	MX6SL_PAD_LCD_ENABLE__UART2_TXD,
+	MX6SL_PAD_LCD_HSYNC__UART2_RXD,
+	MX6SL_PAD_LCD_VSYNC__UART2_CTS,
+	MX6SL_PAD_LCD_RESET__UART2_RTS,
+};
+
+static iomux_v3_cfg_t mx6sl_ntx_uart2_gpio_pads[] = {
+	MX6SL_PAD_LCD_ENABLE__GPIO_2_16,
+	MX6SL_PAD_LCD_HSYNC__GPIO_2_17,
+	MX6SL_PAD_LCD_VSYNC__GPIO_2_18,
+	MX6SL_PAD_LCD_RESET__GPIO_2_19,
 };
 
 #endif
